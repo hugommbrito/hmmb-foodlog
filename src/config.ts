@@ -4,7 +4,8 @@ import { z } from 'zod';
 const envSchema = z.object({
   PORT: z.string().default('3000').transform(Number),
   DATABASE_URL: z.string().min(1, 'DATABASE_URL is required'),
-  REDIS_URL: z.string().optional(),
+  REDIS_URL: z.string().min(1, 'REDIS_URL is required'),
+  ANTHROPIC_API_KEY: z.string().min(1, 'ANTHROPIC_API_KEY is required'),
   ZAPI_INSTANCE: z.string().min(1, 'ZAPI_INSTANCE is required'),
   ZAPI_TOKEN: z.string().min(1, 'ZAPI_TOKEN is required'),
   ZAPI_WEBHOOK_SECRET: z.string().optional(),

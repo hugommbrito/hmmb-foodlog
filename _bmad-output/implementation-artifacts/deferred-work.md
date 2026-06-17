@@ -2,6 +2,13 @@
 
 Capacidades do SPEC-foodlog diferidas para implementação após a fundação (CAP-10 + CAP-1 + CAP-2).
 
+## Melhorias técnicas diferidas — Spec B (encontradas na revisão)
+
+- **pg Pool timeouts**: configurar `connectionTimeoutMillis` e `idleTimeoutMillis` em `src/db/client.ts` quando o volume de tráfego crescer (worker + webhook fazem 2 checkouts simultâneos por burst).
+- **sendTextMessage sem tratamento de erro**: `src/routes/webhook.ts` — se `sendTextMessage` lançar exceção, o Z-API recebe 500 e pode retentar o webhook. Adicionar try/catch ao redor da chamada como pre-existing fix da Spec A.
+- **Extração JSON do Claude**: abordagem `indexOf/lastIndexOf` pode falhar se Claude adicionar prosa com `}` após o JSON. Considerar brace-depth tracking em `src/services/ai.ts` se forem observadas falhas de parse em produção.
+- **Limite 5MB por imagem para Anthropic**: fotos grandes do R2 podem exceder o limite da API e queimar retries. Adicionar guard de tamanho em `fetchImageAsBase64` (`src/services/ai.ts`) se forem observados erros 400 da API.
+
 ---
 
 ## Spec B — AI Pipeline (CAP-2)

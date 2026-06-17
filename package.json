@@ -11,7 +11,10 @@
     "db:migrate": "psql $DATABASE_URL -f src/db/migrations/001_initial_schema.sql"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.27.0",
     "@aws-sdk/client-s3": "^3.600.0",
+    "bullmq": "^5.0.0",
+    "ioredis": "^5.0.0",
     "dotenv": "^16.4.5",
     "fastify": "^4.28.1",
     "pg": "^8.12.0",

@@ -28,6 +28,26 @@ export interface FoodItem {
   confidence: number;
 }
 
+export interface AiFoodItem {
+  description: string;
+  quantity: string | null;
+  kcal: number | null;
+  protein_g: number | null;
+  fat_g: number | null;
+  carbs_g: number | null;
+  confidence: number;
+}
+
+export interface AiAnalysisResult {
+  title: string | null;
+  overall_confidence: number;
+  foods: AiFoodItem[];
+}
+
+export interface AnalyzeEntryJobData {
+  entryId: string;
+}
+
 export interface ZApiImagePayload {
   mimeType: string;
   imageUrl: string;

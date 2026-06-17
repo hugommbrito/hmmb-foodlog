@@ -2,6 +2,7 @@ import { FastifyInstance } from 'fastify';
 import { v4 as uuidv4 } from 'uuid';
 import { config } from '../config';
 import { query } from '../db/client';
+import { enqueueAnalysis } from '../queues/entry';
 import { uploadPhoto } from '../services/storage';
 import {
   extractPhotoFromWebhook,
@@ -62,16 +63,22 @@ export async function webhookRoutes(app: FastifyInstance): Promise<void> {
       return reply.status(200).send({ received: false });
     }
 
+    let entryId: string;
     try {
-      await query(
+      const rows = await query<{ id: string }>(
         `INSERT INTO entries (user_id, photos, ai_confidence_overall, reviewed, ai_cycles)
-         VALUES ($1, $2, 0.0, false, 0)`,
+         VALUES ($1, $2, 0.0, false, 0) RETURNING id`,
         [user.id, [photoUrl]]
       );
+      entryId = rows[0].id;
     } catch (err) {
       console.error(`[webhook] DB insert failed for user ${user.id}:`, err);
       return reply.status(200).send({ received: false });
     }
+
+    enqueueAnalysis(entryId).catch((err) =>
+      console.error(`[webhook] Failed to enqueue analysis for entry ${entryId}:`, (err as Error).message)
+    );
 
     await sendTextMessage(phone, '📸 Foto recebida!');
 
