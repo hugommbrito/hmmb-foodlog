@@ -9,7 +9,7 @@ let worker: Worker<AnalyzeEntryJobData> | null = null;
 let workerConnection: IORedis | null = null;
 
 async function processJob(job: Job<AnalyzeEntryJobData>): Promise<void> {
-  const { entryId } = job.data;
+  const { entryId, correction } = job.data;
 
   const entries = await query<Entry>('SELECT * FROM entries WHERE id = $1', [entryId]);
   if (entries.length === 0) {
@@ -18,7 +18,9 @@ async function processJob(job: Job<AnalyzeEntryJobData>): Promise<void> {
   }
   const entry = entries[0];
 
-  if (entry.ai_cycles > 0) {
+  // The ai_cycles guard protects the initial-capture path from a duplicate run.
+  // A CAP-4 re-analysis always carries a correction, so it is allowed to re-run.
+  if (entry.ai_cycles > 0 && !correction) {
     console.warn(`[worker] Entry ${entryId} already analyzed (ai_cycles=${entry.ai_cycles}), skipping`);
     return;
   }
@@ -37,13 +39,28 @@ async function processJob(job: Job<AnalyzeEntryJobData>): Promise<void> {
   );
   const recentFoods = recentFoodsRows.map((r) => r.description);
 
-  const result = await analyzeEntry(entry.photos, recentFoods);
+  const result = await analyzeEntry(entry.photos, recentFoods, correction);
 
+  // A re-analysis that comes back with zero foods must NOT wipe the prior analysis:
+  // the DELETE below would commit with no replacement and destroy the user's data.
+  // Keep the previous result intact and bail (ai_cycles stays put, so the route
+  // reports 'pending'). On initial capture (no correction) an empty result is a
+  // legitimate "nothing identified" outcome and is allowed to persist.
+  if (correction && result.foods.length === 0) {
+    console.warn(`[worker] Re-analysis of ${entryId} returned no foods; keeping previous analysis`);
+    return;
+  }
+
+  // DELETE + INSERT + UPDATE run in ONE transaction so a re-analysis either fully
+  // replaces the food_items or (on failure → rollback) leaves the prior analysis
+  // intact — never an intermediate state with no items. A re-analysis also resets
+  // reviewed=false so the user re-checks the new result (no-op on initial capture).
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    await client.query('DELETE FROM food_items WHERE entry_id = $1', [entryId]);
     await client.query(
-      `UPDATE entries SET ai_confidence_overall = $2, ai_cycles = ai_cycles + 1, title = $3 WHERE id = $1`,
+      `UPDATE entries SET ai_confidence_overall = $2, ai_cycles = ai_cycles + 1, title = $3, reviewed = false WHERE id = $1`,
       [entryId, result.overall_confidence, result.title]
     );
     for (const food of result.foods) {

@@ -13,8 +13,12 @@ eventsConnection.on('error', (err) => console.error('[queue-events] Redis error:
 const queue = new Queue<AnalyzeEntryJobData>('analyze-entry', { connection });
 const queueEvents = new QueueEvents('analyze-entry', { connection: eventsConnection });
 
-export async function enqueueAnalysis(entryId: string): Promise<Job<AnalyzeEntryJobData>> {
-  return queue.add('analyze-entry', { entryId }, {
+// `correction` is set on a CAP-4 re-analysis; left undefined on initial capture.
+export async function enqueueAnalysis(
+  entryId: string,
+  correction?: string
+): Promise<Job<AnalyzeEntryJobData>> {
+  return queue.add('analyze-entry', { entryId, correction }, {
     attempts: 3,
     backoff: { type: 'exponential', delay: 1000 },
   });

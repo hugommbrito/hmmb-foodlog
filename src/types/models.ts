@@ -75,6 +75,17 @@ export interface AiAnalysisResult {
 
 export interface AnalyzeEntryJobData {
   entryId: string;
+  // CAP-4: when present, the job is a re-analysis driven by a user correction
+  // (composed from free text and/or granular food edits). Absent on initial capture.
+  correction?: string;
+}
+
+// CAP-4: body of POST /entries/:id/reanalyze. The user corrects an entry via free
+// text and/or an edited food list (deletions already applied). At least one must be
+// meaningful; the route composes both into the single `correction` string for the AI.
+export interface ReanalyzeRequest {
+  correction?: string;
+  foods?: { description: string; quantity: string | null }[];
 }
 
 export interface ZApiImagePayload {

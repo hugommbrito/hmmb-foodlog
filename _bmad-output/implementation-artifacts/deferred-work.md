@@ -18,6 +18,11 @@ Capacidades do SPEC-foodlog diferidas para implementação após a fundação (C
 
 - **Filtro de dia não-sargável em `GET /entries`**: `(e.created_at AT TIME ZONE 'America/Sao_Paulo')::date = $2::date` (`src/routes/entries.ts`) aplica função por linha e não usa o índice `(user_id, created_at DESC)`. Irrelevante no volume pessoal; quando o histórico crescer, trocar por filtro de range `created_at >= $start AND created_at < $end` (calculando o intervalo do dia SP em JS ou via CTE) para usar o índice.
 
+## Melhorias técnicas diferidas — CAP-4 correção + re-análise (encontradas na revisão)
+
+- **Re-análise concorrente sem idempotência**: `POST /entries/:id/reanalyze` não usa `jobId` no BullMQ, então dois POSTs simultâneos para a mesma entry enfileiram jobs paralelos (duas transações DELETE+INSERT, `ai_cycles` dobrado). Risco baixíssimo no uso pessoal single-user (a UI desabilita o botão durante o `busy`) e o retry do BullMQ só ocorre em falha pré-commit (rollback, seguro). `jobId=entryId` NÃO serve (quebraria a sequência captura→re-análise, pois o job concluído da captura ficaria retido e dedupliparia a re-análise). Se o endpoint ficar exposto/multiusuário, adicionar um lock por entry (ex.: advisory lock no Postgres ou flag `reanalyzing`).
+- **Sem limite de tamanho da correção/itens**: `correction` e `foods[].description` entram verbatim no prompt da IA sem cap de tamanho nem limite de itens (`src/routes/entries.ts` `buildCorrection`). Para uso pessoal com Bearer single-user é aceitável (DoS auto-infligido; injeção contra a própria IA não é ameaça). Se o endpoint ficar exposto, adicionar limites de tamanho/quantidade e considerar sanitização anti-injeção.
+
 ---
 
 ## Spec B — AI Pipeline (CAP-2)

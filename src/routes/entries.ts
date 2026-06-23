@@ -4,7 +4,7 @@ import { config } from '../config';
 import { query } from '../db/client';
 import { enqueueAnalysis, waitForAnalysis } from '../queues/entry';
 import { uploadPhoto } from '../services/storage';
-import { User, Entry, FoodItem, EntryWithFoods, EntryAnalysisView, PhotoCaptureResponse } from '../types/models';
+import { User, Entry, FoodItem, EntryWithFoods, EntryAnalysisView, PhotoCaptureResponse, ReanalyzeRequest } from '../types/models';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -74,6 +74,33 @@ async function loadEntryView(entryId: string, userId: string): Promise<EntryAnal
     analysis_status: entry.ai_cycles > 0 ? 'done' : 'pending',
     foods,
   };
+}
+
+// CAP-4: collapse the user's granular food edits and/or free-text note into the
+// single correction string the AI consumes. Returns null when there is nothing to
+// correct (so the route can reject with 400). Keeping descriptions verbatim and
+// letting the AI recompute nutrition keeps the "user never types macros" invariant.
+function buildCorrection(body: ReanalyzeRequest | undefined): string | null {
+  const parts: string[] = [];
+
+  const foods = Array.isArray(body?.foods) ? body!.foods : [];
+  const validFoods = foods.filter((f) => f && typeof f.description === 'string' && f.description.trim());
+  if (validFoods.length > 0) {
+    const list = validFoods
+      .map((f) => {
+        const qty = typeof f.quantity === 'string' && f.quantity.trim() ? ` (${f.quantity.trim()})` : '';
+        return `- ${f.description.trim()}${qty}`;
+      })
+      .join('\n');
+    parts.push(`Lista de alimentos corrigida pelo usuário (mantenha estas descrições; recalcule a nutrição):\n${list}`);
+  }
+
+  const note = typeof body?.correction === 'string' ? body.correction.trim() : '';
+  if (note) {
+    parts.push(`Observação do usuário: ${note}`);
+  }
+
+  return parts.length > 0 ? parts.join('\n\n') : null;
 }
 
 export async function entriesRoutes(app: FastifyInstance): Promise<void> {
@@ -252,4 +279,62 @@ export async function entriesRoutes(app: FastifyInstance): Promise<void> {
     }
     return reply.status(200).send(view);
   });
+
+  // CAP-4: correct an entry and re-run the AI. The correction (free text and/or an
+  // edited food list) is enqueued with the analysis job; the worker replaces the
+  // food_items and resets reviewed=false atomically. Synchronous like the capture
+  // POST: a timeout/failure falls back to analysis_status:'pending', never a 5xx.
+  app.post<{ Params: { id: string }; Body: ReanalyzeRequest }>(
+    '/entries/:id/reanalyze',
+    async (request, reply) => {
+      const userId = await authenticate(request);
+      if (!userId) {
+        return reply.status(401).send({ error: 'Missing or invalid token' });
+      }
+
+      const { id } = request.params;
+      if (!UUID_RE.test(id)) {
+        return reply.status(404).send({ error: 'Entry not found' });
+      }
+
+      // Ownership check before doing any work — also yields the 404 for other users.
+      // We capture ai_cycles now so we can tell, after the wait, whether the
+      // re-analysis actually landed (the worker bumps ai_cycles on success).
+      const owned = await query<{ id: string; ai_cycles: number }>(
+        'SELECT id, ai_cycles FROM entries WHERE id = $1 AND user_id = $2',
+        [id, userId]
+      );
+      if (owned.length === 0) {
+        return reply.status(404).send({ error: 'Entry not found' });
+      }
+      const priorCycles = owned[0].ai_cycles;
+
+      const correction = buildCorrection(request.body);
+      if (!correction) {
+        return reply.status(400).send({ error: 'Nothing to correct: provide a correction or edited foods' });
+      }
+
+      try {
+        const job = await enqueueAnalysis(id, correction);
+        await waitForAnalysis(job, config.ANALYSIS_WAIT_TIMEOUT_MS);
+      } catch (err) {
+        request.log.warn(
+          `[entries] Re-analysis not ready for entry ${id}: ${(err as Error).message}`
+        );
+      }
+
+      const view = await loadEntryView(id, userId);
+      if (!view) {
+        return reply.status(404).send({ error: 'Entry not found' });
+      }
+      // analysis_status derives from ai_cycles > 0, which is already true here from
+      // the prior analysis. If ai_cycles did NOT advance, the re-analysis hasn't
+      // landed (timed out / still running / produced nothing): the view still shows
+      // the PREVIOUS result, so report 'pending' to honor the timeout contract.
+      if (view.ai_cycles === priorCycles) {
+        view.analysis_status = 'pending';
+      }
+      return reply.status(200).send(view);
+    }
+  );
 }

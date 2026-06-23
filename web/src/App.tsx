@@ -6,10 +6,11 @@ import {
   fetchRequestLogs,
   getToken,
   purgeRequestLogs,
+  reanalyzeEntry,
   setToken,
   UnauthorizedError,
 } from './api';
-import type { EntryWithFoods, FoodItem, RequestLog } from './types';
+import type { EntryWithFoods, FoodItem, ReanalyzeRequest, RequestLog } from './types';
 
 // YYYY-MM-DD for "today", pinned to the same timezone the backend filters on
 // (America/Sao_Paulo) so the default day matches regardless of the device tz.
@@ -145,6 +146,27 @@ function Review({ onLogout }: { onLogout: () => void }) {
     [onLogout]
   );
 
+  // CAP-4: re-run the AI with the user's correction, then merge the returned view
+  // back into the card (new foods, reviewed:false). Keeps user_id from the existing
+  // entry since the view does not carry it. Updated in place (no re-sort) so the card
+  // the user just edited stays put — matches handleAccept; it re-sorts on next load.
+  const handleReanalyze = useCallback(
+    async (id: string, payload: ReanalyzeRequest) => {
+      try {
+        const view = await reanalyzeEntry(id, payload);
+        setEntries((prev) =>
+          prev.map((e) => (e.id === id ? { ...e, ...view } : e))
+        );
+      } catch (err) {
+        if (err instanceof UnauthorizedError) {
+          onLogout();
+        }
+        throw err;
+      }
+    },
+    [onLogout]
+  );
+
   const pending = useMemo(() => entries.filter((e) => !e.reviewed).length, [entries]);
 
   return (
@@ -175,24 +197,109 @@ function Review({ onLogout }: { onLogout: () => void }) {
 
       <ul className="cards">
         {entries.map((entry) => (
-          <EntryCard key={entry.id} entry={entry} onAccept={handleAccept} />
+          <EntryCard
+            key={entry.id}
+            entry={entry}
+            onAccept={handleAccept}
+            onReanalyze={handleReanalyze}
+          />
         ))}
       </ul>
     </div>
   );
 }
 
+// One editable food in the correction form: description + quantity, plus a stable
+// key so React preserves inputs across re-renders even after a deletion.
+interface EditFood {
+  key: string;
+  description: string;
+  quantity: string;
+}
+
 function EntryCard({
   entry,
   onAccept,
+  onReanalyze,
 }: {
   entry: EntryWithFoods;
   onAccept: (id: string) => void;
+  onReanalyze: (id: string, payload: ReanalyzeRequest) => Promise<void>;
 }) {
+  const [editing, setEditing] = useState(false);
+  const [editFoods, setEditFoods] = useState<EditFood[]>([]);
+  const [foodsDirty, setFoodsDirty] = useState(false);
+  const [note, setNote] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
   const time = new Date(entry.created_at).toLocaleTimeString('pt-BR', {
     hour: '2-digit',
     minute: '2-digit',
   });
+
+  const startEdit = () => {
+    setEditFoods(
+      entry.foods.map((f) => ({
+        key: f.id,
+        description: f.description,
+        quantity: f.quantity ?? '',
+      }))
+    );
+    setFoodsDirty(false);
+    setNote('');
+    setErr(null);
+    setEditing(true);
+  };
+
+  const cancelEdit = () => {
+    setEditing(false);
+    setErr(null);
+  };
+
+  const updateFood = (key: string, field: 'description' | 'quantity', value: string) => {
+    setEditFoods((prev) => prev.map((f) => (f.key === key ? { ...f, [field]: value } : f)));
+    setFoodsDirty(true);
+  };
+
+  const removeFood = (key: string) => {
+    setEditFoods((prev) => prev.filter((f) => f.key !== key));
+    setFoodsDirty(true);
+  };
+
+  const submit = async () => {
+    // Mirror the backend contract: send `foods` only when the user actually edited
+    // them (otherwise the unchanged list would override a pure free-text correction);
+    // send `correction` only when there is text. At least one must be present.
+    const payload: ReanalyzeRequest = {};
+    if (foodsDirty) {
+      payload.foods = editFoods
+        .filter((f) => f.description.trim())
+        .map((f) => ({
+          description: f.description.trim(),
+          quantity: f.quantity.trim() ? f.quantity.trim() : null,
+        }));
+    }
+    if (note.trim()) {
+      payload.correction = note.trim();
+    }
+    if (!payload.correction && (!payload.foods || payload.foods.length === 0)) {
+      setErr('Edite algum alimento ou escreva uma correção.');
+      return;
+    }
+
+    setBusy(true);
+    setErr(null);
+    try {
+      await onReanalyze(entry.id, payload);
+      setEditing(false);
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <li className={`card ${entry.reviewed ? 'reviewed' : ''}`}>
       <div className="photos">
@@ -211,23 +318,77 @@ function EntryCard({
           </span>
         </div>
 
-        {entry.foods.length === 0 ? (
-          <p className="no-foods">IA não identificou alimentos.</p>
+        {!editing ? (
+          <>
+            {entry.foods.length === 0 ? (
+              <p className="no-foods">IA não identificou alimentos.</p>
+            ) : (
+              <ul className="foods">
+                {entry.foods.map((f) => (
+                  <FoodRow key={f.id} food={f} />
+                ))}
+              </ul>
+            )}
+            <div className="actions">
+              {entry.reviewed ? (
+                <span className="accepted">✓ Revisado</span>
+              ) : (
+                <button onClick={() => onAccept(entry.id)}>Aceitar</button>
+              )}
+              <button className="link" onClick={startEdit}>Corrigir</button>
+            </div>
+          </>
         ) : (
-          <ul className="foods">
-            {entry.foods.map((f) => (
-              <FoodRow key={f.id} food={f} />
-            ))}
-          </ul>
+          <div className="edit">
+            {editFoods.length > 0 && (
+              <ul className="edit-foods">
+                {editFoods.map((f) => (
+                  <li key={f.key} className="edit-food">
+                    <input
+                      type="text"
+                      value={f.description}
+                      placeholder="Alimento"
+                      onChange={(e) => updateFood(f.key, 'description', e.target.value)}
+                      disabled={busy}
+                    />
+                    <input
+                      type="text"
+                      className="qty"
+                      value={f.quantity}
+                      placeholder="Qtd"
+                      onChange={(e) => updateFood(f.key, 'quantity', e.target.value)}
+                      disabled={busy}
+                    />
+                    <button
+                      type="button"
+                      className="link danger"
+                      onClick={() => removeFood(f.key)}
+                      disabled={busy}
+                      aria-label="Remover alimento"
+                    >
+                      🗑
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <textarea
+              className="note"
+              value={note}
+              placeholder="Correção em texto livre (ex.: é peixe, não frango; porção ~200g)"
+              onChange={(e) => setNote(e.target.value)}
+              disabled={busy}
+              rows={2}
+            />
+            {err && <div className="banner error">{err}</div>}
+            <div className="actions">
+              <button onClick={() => void submit()} disabled={busy}>
+                {busy ? 'Re-analisando…' : 'Re-analisar'}
+              </button>
+              <button className="link" onClick={cancelEdit} disabled={busy}>Cancelar</button>
+            </div>
+          </div>
         )}
-
-        <div className="actions">
-          {entry.reviewed ? (
-            <span className="accepted">✓ Revisado</span>
-          ) : (
-            <button onClick={() => onAccept(entry.id)}>Aceitar</button>
-          )}
-        </div>
       </div>
     </li>
   );

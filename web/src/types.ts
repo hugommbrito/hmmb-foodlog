@@ -25,6 +25,28 @@ export interface EntryWithFoods {
   foods: FoodItem[];
 }
 
+// CAP-4: body of POST /entries/:id/reanalyze. Free-text note and/or an edited
+// food list (deletions already applied); at least one must be meaningful.
+export interface ReanalyzeRequest {
+  correction?: string;
+  foods?: { description: string; quantity: string | null }[];
+}
+
+// Mirrors the backend `EntryAnalysisView` — the re-analysis response. Same render
+// fields as EntryWithFoods (minus user_id, plus analysis_status).
+export interface EntryAnalysisView {
+  id: string;
+  created_at: string;
+  photos: string[];
+  title: string | null;
+  context: 'casa' | 'restaurante' | 'trabalho' | 'rua' | null;
+  ai_confidence_overall: number;
+  reviewed: boolean;
+  ai_cycles: number;
+  analysis_status: 'pending' | 'done';
+  foods: FoodItem[];
+}
+
 // Mirrors the backend `RequestLog` (src/types/models.ts). One persisted inbound
 // HTTP request from the audit module. created_at arrives as an ISO string.
 export interface RequestLog {

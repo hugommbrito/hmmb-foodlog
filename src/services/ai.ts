@@ -50,7 +50,11 @@ async function fetchImageAsBase64(url: string): Promise<{ data: string; media_ty
   }
 }
 
-export async function analyzeEntry(photos: string[], recentFoods: string[]): Promise<AiAnalysisResult> {
+export async function analyzeEntry(
+  photos: string[],
+  recentFoods: string[],
+  correction?: string
+): Promise<AiAnalysisResult> {
   const content: Anthropic.MessageParam['content'] = [];
 
   for (const photoUrl of photos) {
@@ -65,9 +69,18 @@ export async function analyzeEntry(photos: string[], recentFoods: string[]): Pro
     ? `Recent foods for this user: ${recentFoods.join(', ')}. `
     : '';
 
+  // CAP-4: on a re-analysis the user has corrected a previous result. Treat the
+  // correction as ground truth — keep the descriptions the user gave and only
+  // recompute the nutrition/confidence; do not second-guess the corrected items.
+  const correctionCtx = correction && correction.trim()
+    ? `O usuário corrigiu uma análise anterior desta refeição. Trate a correção a seguir como verdade: ` +
+      `mantenha as descrições informadas pelo usuário e apenas recalcule a nutrição (kcal, macros) e a confiança. ` +
+      `Correção do usuário:\n${correction.trim()}\n\n`
+    : '';
+
   content.push({
     type: 'text',
-    text: `${foodsCtx}Analyze the meal in the photo(s) above and return the JSON.`,
+    text: `${foodsCtx}${correctionCtx}Analyze the meal in the photo(s) above and return the JSON.`,
   });
 
   const response = await anthropic.messages.create({

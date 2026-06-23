@@ -1,4 +1,4 @@
-import type { EntryWithFoods, RequestLog } from './types';
+import type { EntryWithFoods, EntryAnalysisView, ReanalyzeRequest, RequestLog } from './types';
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:3000').replace(/\/$/, '');
 const TOKEN_KEY = 'foodlog_api_token';
@@ -58,6 +58,17 @@ export function fetchEntries(date?: string): Promise<EntryWithFoods[]> {
 // callers only rely on the request succeeding.
 export function acceptEntry(id: string): Promise<{ reviewed: boolean }> {
   return request<{ reviewed: boolean }>(`/entries/${id}`, { method: 'PATCH' });
+}
+
+// CAP-4: correct an entry (free text and/or edited foods) and re-run the AI.
+// Returns the re-analyzed view (new foods, reviewed:false). Synchronous on the
+// backend, so this can take up to the analysis timeout (~50s).
+export function reanalyzeEntry(id: string, payload: ReanalyzeRequest): Promise<EntryAnalysisView> {
+  return request<EntryAnalysisView>(`/entries/${id}/reanalyze`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
 }
 
 // Audit module: list recent inbound requests, optionally filtered by a path
