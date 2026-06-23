@@ -4,6 +4,9 @@
   "description": "Food logging backend with WhatsApp capture and AI analysis",
   "type": "commonjs",
   "main": "dist/server.js",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "build": "tsc",
     "start": "node dist/server.js",

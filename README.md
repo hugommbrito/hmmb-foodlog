@@ -225,13 +225,19 @@ Se usar `ZAPI_WEBHOOK_SECRET`, configure o mesmo valor no campo "Client Token" d
 
 ### 7. Deploy (Railway)
 
-O arquivo `railway.json` já está configurado. O Railway executa:
+O arquivo `railway.json` está configurado para o builder **Nixpacks** e define o ciclo completo:
 
-```bash
-npm run build && node dist/server.js
-```
+| Fase | Comando | O que faz |
+|---|---|---|
+| Build | `npm run build` | Compila TypeScript para `dist/` |
+| Pré-deploy | `npm run db:migrate` | Aplica todas as migrations **automaticamente** a cada deploy (idempotente) |
+| Start | `node dist/server.js` | Sobe o servidor Fastify + worker BullMQ no mesmo processo |
 
-E usa `GET /health` como healthcheck. Adicione também um serviço Redis no Railway e configure a variável `REDIS_URL`.
+- **Healthcheck:** `GET /health`. **Restart:** `ON_FAILURE` (até 10 tentativas).
+- **Versão do Node:** fixada em 20 via `.nvmrc` + `engines` no `package.json`.
+- **Serviços a adicionar no projeto Railway:** PostgreSQL e Redis (plugins) — depois preencha `DATABASE_URL` e `REDIS_URL` nas variáveis.
+- **Variáveis de ambiente:** configure no painel do Railway todas as do `.env.example` (`DATABASE_URL`, `REDIS_URL`, `ANTHROPIC_API_KEY`, `ZAPI_*`, `R2_*`). `PORT` é injetada pelo Railway.
+- **Observação:** o pré-deploy usa `tsx` (devDependency); não habilite poda de devDependencies (`NPM_CONFIG_PRODUCTION`/`--omit=dev`), senão a migration não roda.
 
 ---
 
