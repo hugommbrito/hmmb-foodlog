@@ -8,7 +8,7 @@
     "build": "tsc",
     "start": "node dist/server.js",
     "dev": "tsx src/server.ts",
-    "db:migrate": "psql $DATABASE_URL -f src/db/migrations/001_initial_schema.sql && psql $DATABASE_URL -f src/db/migrations/002_add_users_api_token.sql"
+    "db:migrate": "tsx src/db/migrate.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.27.0",
