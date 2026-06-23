@@ -5,6 +5,8 @@ import { config } from './config';
 import { healthRoutes } from './routes/health';
 import { webhookRoutes } from './routes/webhook';
 import { entriesRoutes } from './routes/entries';
+import { auditRoutes } from './routes/audit';
+import { registerAuditHooks } from './plugins/audit';
 
 const MAX_PHOTO_BYTES = 20 * 1024 * 1024; // 20 MB per photo
 const MAX_PHOTOS_PER_REQUEST = 10;
@@ -25,9 +27,14 @@ export function buildApp() {
     },
   });
 
+  // Inbound audit hooks must be registered before the route plugins so they
+  // apply to every route. Fire-and-forget — never affects the response.
+  registerAuditHooks(app);
+
   app.register(healthRoutes);
   app.register(webhookRoutes);
   app.register(entriesRoutes);
+  app.register(auditRoutes);
 
   return app;
 }

@@ -1,4 +1,4 @@
-import type { EntryWithFoods } from './types';
+import type { EntryWithFoods, RequestLog } from './types';
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:3000').replace(/\/$/, '');
 const TOKEN_KEY = 'foodlog_api_token';
@@ -58,4 +58,21 @@ export function fetchEntries(date?: string): Promise<EntryWithFoods[]> {
 // callers only rely on the request succeeding.
 export function acceptEntry(id: string): Promise<{ reviewed: boolean }> {
   return request<{ reviewed: boolean }>(`/entries/${id}`, { method: 'PATCH' });
+}
+
+// Audit module: list recent inbound requests, optionally filtered by a path
+// substring. `/audit/*` requests are not themselves logged by the backend.
+export function fetchRequestLogs(q?: string, limit = 100): Promise<RequestLog[]> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (q && q.trim()) {
+    params.set('q', q.trim());
+  }
+  return request<RequestLog[]>(`/audit/requests?${params.toString()}`);
+}
+
+// Manual cleanup. Without `before`, purges all logs; with `before` (YYYY-MM-DD),
+// removes logs older than that date. Returns the number deleted.
+export function purgeRequestLogs(before?: string): Promise<{ deleted: number }> {
+  const q = before ? `?before=${encodeURIComponent(before)}` : '';
+  return request<{ deleted: number }>(`/audit/requests${q}`, { method: 'DELETE' });
 }

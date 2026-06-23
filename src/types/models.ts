@@ -86,6 +86,22 @@ export interface ZApiImagePayload {
   height: number;
 }
 
+// One persisted inbound HTTP request (audit module). request_headers is a
+// redacted name→value map; bodies are scrubbed/truncated text (or null).
+export interface RequestLog {
+  id: string;
+  created_at: Date;
+  method: string;
+  path: string;
+  query: string | null;
+  status_code: number | null;
+  duration_ms: number | null;
+  request_headers: Record<string, string> | null;
+  request_body: string | null;
+  response_body: string | null;
+  remote_ip: string | null;
+}
+
 export interface WebhookPayload {
   instanceId?: string;
   messageId?: string;

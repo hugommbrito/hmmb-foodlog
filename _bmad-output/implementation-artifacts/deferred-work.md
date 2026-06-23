@@ -58,6 +58,10 @@ Busca por nome de alimento retorna todas as entradas correspondentes em ordem cr
 
 Campo opcional nas entradas. Selecionável com um toque na interface de captura (Shortcut) ou revisão (web app). 4 opções fixas.
 
+## Auditabilidade — captura OUTBOUND (diferido de spec-audit-request-log)
+
+Diferido na divisão do módulo de auditabilidade (escopo principal entregou só inbound + storage + API + web). Instrumentar as 5 chamadas a serviços externos para gravar rows `direction='outbound'` em `request_logs` (mesma tabela): `sendTextMessage` e `downloadPhoto` (`src/services/whatsapp.ts`), `anthropic.messages.create` e `fetchImageAsBase64` (`src/services/ai.ts`), `s3.send` (`src/services/storage.ts`). Padrão `withOutboundAudit(target, method, label, summary, run)`: cronometra `run()`, loga sucesso/erro fire-and-forget e **re-lança** o erro original. URLs do Z-API/imagem redigidas via `scrubSecrets`; resumo sem base64 (ex.: Anthropic grava `{model, photos:N}`; Z-API send-text grava `{phone, message}`). Reusa `request_logs`, `scrubSecrets`/`logOutbound` (já criados no escopo inbound) e a tela web (que já filtra por `direction`).
+
 ---
 
 ## Melhorias técnicas diferidas (encontradas na revisão da Spec A)

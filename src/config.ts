@@ -18,6 +18,9 @@ const envSchema = z.object({
   // Allowed origin for the daily-review web app (CAP-3). Optional: when absent,
   // CORS reflects any origin (acceptable for personal use — auth is Bearer, not cookies).
   WEB_APP_ORIGIN: z.string().optional(),
+  // Audit module: when 'true' (default), every inbound request is persisted to
+  // request_logs. Set to 'false' to disable logging (e.g. if the table grows).
+  AUDIT_ENABLED: z.string().default('true'),
 });
 
 const result = envSchema.safeParse(process.env);

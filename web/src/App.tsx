@@ -3,11 +3,13 @@ import {
   acceptEntry,
   clearToken,
   fetchEntries,
+  fetchRequestLogs,
   getToken,
+  purgeRequestLogs,
   setToken,
   UnauthorizedError,
 } from './api';
-import type { EntryWithFoods, FoodItem } from './types';
+import type { EntryWithFoods, FoodItem, RequestLog } from './types';
 
 // YYYY-MM-DD for "today", pinned to the same timezone the backend filters on
 // (America/Sao_Paulo) so the default day matches regardless of the device tz.
@@ -36,13 +38,40 @@ function sortForReview(list: EntryWithFoods[]): EntryWithFoods[] {
   });
 }
 
+type Tab = 'review' | 'audit';
+
 export function App() {
   const [token, setTokenState] = useState<string | null>(getToken());
 
   if (!token) {
     return <TokenGate onSave={(t) => { setToken(t); setTokenState(t); }} />;
   }
-  return <Review onLogout={() => { clearToken(); setTokenState(null); }} />;
+  return <Shell onLogout={() => { clearToken(); setTokenState(null); }} />;
+}
+
+// Authenticated shell: tab bar switching between the daily review and the
+// request audit log. Both screens share the same Bearer token.
+function Shell({ onLogout }: { onLogout: () => void }) {
+  const [tab, setTab] = useState<Tab>('review');
+  return (
+    <div className="shell">
+      <nav className="tabs">
+        <button
+          className={tab === 'review' ? 'tab active' : 'tab'}
+          onClick={() => setTab('review')}
+        >
+          Revisão
+        </button>
+        <button
+          className={tab === 'audit' ? 'tab active' : 'tab'}
+          onClick={() => setTab('audit')}
+        >
+          Auditoria
+        </button>
+      </nav>
+      {tab === 'review' ? <Review onLogout={onLogout} /> : <Audit onLogout={onLogout} />}
+    </div>
+  );
 }
 
 function TokenGate({ onSave }: { onSave: (token: string) => void }) {
@@ -220,5 +249,155 @@ function FoodRow({ food }: { food: FoodItem }) {
       </span>
       {macros.length > 0 && <span className="macros">{macros.join(' · ')}</span>}
     </li>
+  );
+}
+
+// Color class for an HTTP status code (or null when no response was sent).
+function statusClass(code: number | null): string {
+  if (code === null) return 'st-none';
+  if (code >= 500) return 'st-5xx';
+  if (code >= 400) return 'st-4xx';
+  if (code >= 200 && code < 300) return 'st-2xx';
+  return 'st-other';
+}
+
+function Audit({ onLogout }: { onLogout: () => void }) {
+  const [logs, setLogs] = useState<RequestLog[]>([]);
+  const [q, setQ] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<string | null>(null);
+
+  // `search` is passed explicitly so this callback only depends on onLogout
+  // (stable) — the mount effect runs once and filtering is triggered manually.
+  const load = useCallback(
+    async (search: string) => {
+      setLoading(true);
+      setError(null);
+      try {
+        setLogs(await fetchRequestLogs(search));
+      } catch (err) {
+        if (err instanceof UnauthorizedError) {
+          onLogout();
+          return;
+        }
+        setError((err as Error).message);
+      } finally {
+        setLoading(false);
+      }
+    },
+    [onLogout]
+  );
+
+  useEffect(() => {
+    void load('');
+  }, [load]);
+
+  const handlePurge = useCallback(async () => {
+    if (!window.confirm('Apagar TODOS os registros de auditoria?')) return;
+    try {
+      await purgeRequestLogs();
+      setLogs([]);
+      setExpanded(null);
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        onLogout();
+        return;
+      }
+      setError((err as Error).message);
+    }
+  }, [onLogout]);
+
+  return (
+    <div className="review">
+      <header>
+        <div className="header-row">
+          <h1>Auditoria</h1>
+          <button className="link" onClick={onLogout}>Sair</button>
+        </div>
+        <form
+          className="controls"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void load(q);
+          }}
+        >
+          <input
+            type="search"
+            placeholder="Filtrar por path (ex.: /webhook)"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+          />
+          <button type="submit">Buscar</button>
+          <button type="button" className="link" onClick={() => void load(q)}>Atualizar</button>
+          <button type="button" className="link danger" onClick={() => void handlePurge()}>Limpar</button>
+        </form>
+      </header>
+
+      {error && <div className="banner error">{error}</div>}
+      {loading && <div className="banner">Carregando…</div>}
+      {!loading && !error && logs.length === 0 && (
+        <div className="empty">Nenhuma requisição registrada.</div>
+      )}
+
+      <ul className="logs">
+        {logs.map((log) => (
+          <LogRow
+            key={log.id}
+            log={log}
+            open={expanded === log.id}
+            onToggle={() => setExpanded((cur) => (cur === log.id ? null : log.id))}
+          />
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function LogRow({
+  log,
+  open,
+  onToggle,
+}: {
+  log: RequestLog;
+  open: boolean;
+  onToggle: () => void;
+}) {
+  const when = new Date(log.created_at).toLocaleString('pt-BR', {
+    day: '2-digit',
+    month: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+  return (
+    <li className="log">
+      <button className="log-head" onClick={onToggle}>
+        <span className={`status ${statusClass(log.status_code)}`}>{log.status_code ?? '—'}</span>
+        <span className="method">{log.method}</span>
+        <span className="log-path">{log.path}</span>
+        <span className="log-meta">
+          {log.duration_ms != null ? `${log.duration_ms}ms` : ''} · {when}
+        </span>
+      </button>
+      {open && (
+        <div className="log-detail">
+          {log.query && <Field label="Query" value={log.query} />}
+          {log.remote_ip && <Field label="IP" value={log.remote_ip} />}
+          <Field label="Headers" value={JSON.stringify(log.request_headers ?? {}, null, 2)} />
+          <Field label="Request body" value={log.request_body ?? '(vazio)'} />
+          <Field label="Response body" value={log.response_body ?? '(vazio)'} />
+        </div>
+      )}
+    </li>
+  );
+}
+
+function Field({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="field">
+      <span className="field-label">{label}</span>
+      <pre className="field-value">{value}</pre>
+    </div>
   );
 }
