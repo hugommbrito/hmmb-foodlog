@@ -129,4 +129,6 @@ export interface WebhookPayload {
   type?: string;
   isNewsletter?: boolean;
   image?: ZApiImagePayload | null;
+  // CAP-5: free-text reply used to correct the most recent entry of the day.
+  text?: { message?: string } | null;
 }

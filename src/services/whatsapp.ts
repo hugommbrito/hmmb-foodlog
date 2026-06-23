@@ -1,5 +1,5 @@
 import { config } from '../config';
-import { WebhookPayload } from '../types/models';
+import { WebhookPayload, FoodItem } from '../types/models';
 
 const FETCH_TIMEOUT_MS = 8000;
 const MAX_PHOTO_BYTES = 20 * 1024 * 1024; // 20 MB
@@ -14,6 +14,41 @@ export function extractPhotoFromWebhook(payload: WebhookPayload): string | null 
     return null;
   }
   return payload.image.imageUrl;
+}
+
+// CAP-5: a text-only message (no photo) is a correction. Returns the trimmed
+// message, or null when there is no usable text.
+export function extractTextFromWebhook(payload: WebhookPayload): string | null {
+  const message = payload.text?.message;
+  if (typeof message !== 'string') {
+    return null;
+  }
+  const trimmed = message.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+// CAP-5: render the re-analyzed entry as a WhatsApp confirmation in pt-BR
+// (title + food bullets with quantity and non-null macros + overall confidence).
+export function formatEntrySummary(
+  title: string | null,
+  foods: FoodItem[],
+  confidence: number
+): string {
+  const lines = [`✅ Entrada atualizada!`, `🍽 ${title?.trim() || 'Refeição'}`, ''];
+
+  for (const food of foods) {
+    const qty = food.quantity?.trim() ? ` (${food.quantity.trim()})` : '';
+    const macros: string[] = [];
+    if (food.kcal != null) macros.push(`${food.kcal} kcal`);
+    if (food.protein_g != null) macros.push(`P ${food.protein_g}g`);
+    if (food.carbs_g != null) macros.push(`C ${food.carbs_g}g`);
+    if (food.fat_g != null) macros.push(`G ${food.fat_g}g`);
+    const macrosStr = macros.length > 0 ? ` — ${macros.join(' · ')}` : '';
+    lines.push(`• ${food.description}${qty}${macrosStr}`);
+  }
+
+  lines.push('', `Confiança: ${Math.round(confidence * 100)}%`);
+  return lines.join('\n');
 }
 
 export async function downloadPhoto(imageUrl: string): Promise<PhotoData | null> {

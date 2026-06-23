@@ -23,6 +23,16 @@ Capacidades do SPEC-foodlog diferidas para implementação após a fundação (C
 - **Re-análise concorrente sem idempotência**: `POST /entries/:id/reanalyze` não usa `jobId` no BullMQ, então dois POSTs simultâneos para a mesma entry enfileiram jobs paralelos (duas transações DELETE+INSERT, `ai_cycles` dobrado). Risco baixíssimo no uso pessoal single-user (a UI desabilita o botão durante o `busy`) e o retry do BullMQ só ocorre em falha pré-commit (rollback, seguro). `jobId=entryId` NÃO serve (quebraria a sequência captura→re-análise, pois o job concluído da captura ficaria retido e dedupliparia a re-análise). Se o endpoint ficar exposto/multiusuário, adicionar um lock por entry (ex.: advisory lock no Postgres ou flag `reanalyzing`).
 - **Sem limite de tamanho da correção/itens**: `correction` e `foods[].description` entram verbatim no prompt da IA sem cap de tamanho nem limite de itens (`src/routes/entries.ts` `buildCorrection`). Para uso pessoal com Bearer single-user é aceitável (DoS auto-infligido; injeção contra a própria IA não é ameaça). Se o endpoint ficar exposto, adicionar limites de tamanho/quantidade e considerar sanitização anti-injeção.
 
+## Melhorias técnicas diferidas — CAP-5 correção por texto no WhatsApp (encontradas na revisão)
+
+Todos aceitos conscientemente para uso pessoal single-user. Revisar se o canal virar multiusuário/exposto.
+
+- **Alvo = "última entry de hoje" sem confirmação**: `processCorrection` (`src/routes/webhook.ts`) corrige sempre a entry mais recente de hoje. Se o usuário mandar 2 fotos e quiser corrigir a 1ª, o texto atinge a 2ª. Mitigação futura: ecoar o título da entry corrigida ou usar o quoted-message do Z-API para identificar a entry exata.
+- **Sem idempotência por message-ID / concorrência**: mesma classe do item da CAP-4. O webhook responde 200 antes da re-análise terminar; um redelivery do Z-API (mesmo `messageId`) dispararia uma segunda correção (segundo ciclo, `ai_cycles` dobrado, summary duplicado). Duas correções simultâneas correm no `ai_cycles` (a detecção de sucesso por `priorCycles` fica ambígua). Uma correção enquanto a análise inicial ainda está pendente (`ai_cycles=0`) roda concorrente ao job de captura. Mitigação: dedupe por `messageId` + lock por entry (advisory lock Postgres).
+- **Qualquer texto vira correção (sem intent-gating)**: um "oi"/emoji acidental de número cadastrado dispara re-análise e pode sobrescrever uma boa análise. Mitigação: gating por palavra-chave/prefixo ou heurística antes de enfileirar. Aplicar junto o cap de tamanho do texto (mesmo item da CAP-4).
+- **Confirmação não-durável**: a confirmação é fire-and-forget em memória; se o processo reiniciar durante a re-análise, o usuário não recebe o resumo (a re-análise em si fica persistida). Mitigação: rastrear promises em voo no shutdown gracioso, ou job durável de confirmação.
+- **Borda de fuso na virada do dia**: foto às 23:59 + correção às 00:01 (America/Sao_Paulo) caem em `::date` diferentes → "Não encontrei uma entrada de hoje". Inerente à escolha "só entries de hoje"; revisitar se incomodar.
+
 ---
 
 ## Spec B — AI Pipeline (CAP-2)
@@ -43,9 +53,9 @@ Interface responsiva para revisar e aceitar/corrigir entradas do dia. Triagem au
 
 Usuário reescreve descrição ou apaga campos na revisão → dispara novo ciclo de análise da IA sem preencher dados nutricionais manualmente.
 
-## CAP-5 — Correção via WhatsApp (texto/áudio)
+## CAP-5 — Correção via WhatsApp — ÁUDIO (texto já entregue)
 
-Bot WhatsApp aceita mensagem de texto livre ou áudio para corrigir uma entrada. Transcreve áudio quando necessário, identifica campos a atualizar, confirma na mesma thread.
+A correção por **texto** foi entregue em `spec-cap-5-whatsapp-text-correction.md` (mensagem de texto sem foto corrige a entry mais recente de hoje, reusando o pipeline de re-análise da CAP-4, com resumo de confirmação na mesma thread). Permanece diferida a correção por **áudio**: o Claude/Anthropic não transcreve áudio nativamente, então exige um provedor externo de transcrição (ex.: OpenAI Whisper ou Groq Whisper — nova dependência + chave + custo). Implementar: extrair `audio.audioUrl` do payload Z-API, baixar e transcrever para texto, e então alimentar o mesmo `processCorrection` (`src/routes/webhook.ts`) já existente.
 
 ## CAP-6 — Relatório semanal de padrões comportamentais
 
