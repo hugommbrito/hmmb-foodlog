@@ -14,6 +14,9 @@ const envSchema = z.object({
   R2_ACCESS_KEY: z.string().min(1, 'R2_ACCESS_KEY is required'),
   R2_SECRET_KEY: z.string().min(1, 'R2_SECRET_KEY is required'),
   R2_PUBLIC_URL: z.string().min(1, 'R2_PUBLIC_URL is required'),
+  // Allowed origin for the daily-review web app (CAP-3). Optional: when absent,
+  // CORS reflects any origin (acceptable for personal use — auth is Bearer, not cookies).
+  WEB_APP_ORIGIN: z.string().optional(),
 });
 
 const result = envSchema.safeParse(process.env);

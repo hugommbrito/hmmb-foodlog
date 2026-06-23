@@ -3,7 +3,21 @@ import { v4 as uuidv4 } from 'uuid';
 import { query } from '../db/client';
 import { enqueueAnalysis } from '../queues/entry';
 import { uploadPhoto } from '../services/storage';
-import { User, PhotoCaptureResponse } from '../types/models';
+import { User, PhotoCaptureResponse, EntryWithFoods, Entry } from '../types/models';
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+// Shape check (DATE_RE) is not enough: '2026-13-40' / '2026-02-30' pass the regex
+// but blow up at the Postgres `::date` cast (500). Validate calendar validity too.
+function isValidCalendarDate(s: string): boolean {
+  if (!DATE_RE.test(s)) {
+    return false;
+  }
+  const [y, m, d] = s.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;
+}
 
 function extractBearerToken(request: FastifyRequest): string | null {
   const header = request.headers.authorization;
@@ -18,21 +32,84 @@ function extractBearerToken(request: FastifyRequest): string | null {
   return token.length > 0 ? token : null;
 }
 
+// Resolves the authenticated user id from the Bearer token, or null if the
+// header is missing/malformed or the token does not match any user.
+async function authenticate(request: FastifyRequest): Promise<string | null> {
+  const token = extractBearerToken(request);
+  if (!token) {
+    return null;
+  }
+  const users = await query<User>(
+    'SELECT id FROM users WHERE api_token = $1',
+    [token]
+  );
+  return users.length > 0 ? users[0].id : null;
+}
+
 export async function entriesRoutes(app: FastifyInstance): Promise<void> {
-  app.post('/entries/photo', async (request, reply) => {
-    const token = extractBearerToken(request);
-    if (!token) {
-      return reply.status(401).send({ error: 'Missing or malformed Authorization header' });
+  // Daily review feed: all of a user's entries for one local (America/Sao_Paulo)
+  // day, each with its AI-identified food_items nested as `foods`.
+  app.get<{ Querystring: { date?: string } }>('/entries', async (request, reply) => {
+    const userId = await authenticate(request);
+    if (!userId) {
+      return reply.status(401).send({ error: 'Missing or invalid token' });
     }
 
-    const users = await query<User>(
-      'SELECT id FROM users WHERE api_token = $1',
-      [token]
-    );
-    if (users.length === 0) {
-      return reply.status(401).send({ error: 'Invalid token' });
+    const date = request.query.date;
+    if (date !== undefined && !isValidCalendarDate(date)) {
+      return reply.status(400).send({ error: 'Invalid date; expected YYYY-MM-DD' });
     }
-    const user = users[0];
+
+    const entries = await query<EntryWithFoods>(
+      `SELECT e.*,
+              COALESCE(
+                json_agg(f.* ORDER BY f.confidence ASC, f.id ASC) FILTER (WHERE f.id IS NOT NULL),
+                '[]'
+              ) AS foods
+       FROM entries e
+       LEFT JOIN food_items f ON f.entry_id = e.id
+       WHERE e.user_id = $1
+         AND (e.created_at AT TIME ZONE 'America/Sao_Paulo')::date
+             = COALESCE($2::date, (now() AT TIME ZONE 'America/Sao_Paulo')::date)
+       GROUP BY e.id
+       ORDER BY e.created_at ASC`,
+      [userId, date ?? null]
+    );
+
+    return reply.status(200).send(entries);
+  });
+
+  // Accept an entry: mark it reviewed. Scoped to the owner via user_id.
+  app.patch<{ Params: { id: string } }>('/entries/:id', async (request, reply) => {
+    const userId = await authenticate(request);
+    if (!userId) {
+      return reply.status(401).send({ error: 'Missing or invalid token' });
+    }
+
+    const { id } = request.params;
+    if (!UUID_RE.test(id)) {
+      return reply.status(404).send({ error: 'Entry not found' });
+    }
+
+    const rows = await query<Entry>(
+      `UPDATE entries SET reviewed = true
+       WHERE id = $1 AND user_id = $2
+       RETURNING *`,
+      [id, userId]
+    );
+    if (rows.length === 0) {
+      return reply.status(404).send({ error: 'Entry not found' });
+    }
+
+    return reply.status(200).send(rows[0]);
+  });
+
+  app.post('/entries/photo', async (request, reply) => {
+    const userId = await authenticate(request);
+    if (!userId) {
+      return reply.status(401).send({ error: 'Missing or invalid token' });
+    }
+    const user = { id: userId };
 
     if (!request.isMultipart()) {
       return reply.status(400).send({ error: 'Expected multipart/form-data' });
