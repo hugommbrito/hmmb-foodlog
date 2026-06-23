@@ -5,8 +5,27 @@ export interface User {
   created_at: Date;
 }
 
+export type AnalysisStatus = 'pending' | 'done';
+
 export interface PhotoCaptureResponse {
   entry_id: string;
+  analysis_status: AnalysisStatus;
+  title: string | null;
+  ai_confidence_overall: number;
+  foods: FoodItem[];
+}
+
+export interface EntryAnalysisView {
+  id: string;
+  created_at: Date;
+  photos: string[];
+  title: string | null;
+  context: 'casa' | 'restaurante' | 'trabalho' | 'rua' | null;
+  ai_confidence_overall: number;
+  reviewed: boolean;
+  ai_cycles: number;
+  analysis_status: AnalysisStatus;
+  foods: FoodItem[];
 }
 
 export interface Entry {
