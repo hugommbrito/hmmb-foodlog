@@ -1,7 +1,12 @@
 export interface User {
   id: string;
   phone_number: string;
+  api_token: string | null;
   created_at: Date;
+}
+
+export interface PhotoCaptureResponse {
+  entry_id: string;
 }
 
 export interface Entry {
