@@ -14,6 +14,10 @@ Capacidades do SPEC-foodlog diferidas para implementação após a fundação (C
 - **Hashing do `api_token`**: hoje o token é armazenado em plaintext em `users.api_token` e comparado verbatim (`src/routes/entries.ts`). Aceitável para uso pessoal, mas um vazamento de DB expõe a credencial. Considerar armazenar SHA-256 do token e comparar pelo hash quando houver mais de um usuário/uso externo.
 - **Buffering em memória no upload multipart**: `src/routes/entries.ts` faz `toBuffer()` de cada foto e acumula todas em memória antes do upload ao R2 (até 10×20MB = ~200MB por requisição). Para uso pessoal é ok; se o endpoint ficar exposto, considerar streaming direto ao R2 e/ou reduzir `MAX_PHOTOS_PER_REQUEST` em `src/app.ts`.
 
+## Melhorias técnicas diferidas — CAP-3 web app de revisão (encontradas na revisão)
+
+- **Filtro de dia não-sargável em `GET /entries`**: `(e.created_at AT TIME ZONE 'America/Sao_Paulo')::date = $2::date` (`src/routes/entries.ts`) aplica função por linha e não usa o índice `(user_id, created_at DESC)`. Irrelevante no volume pessoal; quando o histórico crescer, trocar por filtro de range `created_at >= $start AND created_at < $end` (calculando o intervalo do dia SP em JS ou via CTE) para usar o índice.
+
 ---
 
 ## Spec B — AI Pipeline (CAP-2)

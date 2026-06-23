@@ -1,4 +1,11 @@
 {
+  "watchPatterns": [
+    "src/**",
+    "package.json",
+    "package-lock.json",
+    "tsconfig.json",
+    "railway.json"
+  ],
   "build": {
     "builder": "NIXPACKS",
     "buildCommand": "npm run build"

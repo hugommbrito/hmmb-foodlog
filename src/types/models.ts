@@ -33,6 +33,11 @@ export interface FoodItem {
   confidence: number;
 }
 
+// Response shape for the daily review web app: an entry plus its AI-identified foods.
+export interface EntryWithFoods extends Entry {
+  foods: FoodItem[];
+}
+
 export interface AiFoodItem {
   description: string;
   quantity: string | null;
