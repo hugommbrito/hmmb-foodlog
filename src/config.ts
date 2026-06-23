@@ -5,6 +5,7 @@ const envSchema = z.object({
   PORT: z.string().default('3000').transform(Number),
   DATABASE_URL: z.string().min(1, 'DATABASE_URL is required'),
   REDIS_URL: z.string().min(1, 'REDIS_URL is required'),
+  ANALYSIS_WAIT_TIMEOUT_MS: z.string().default('50000').transform(Number).pipe(z.number().int().positive()),
   ANTHROPIC_API_KEY: z.string().min(1, 'ANTHROPIC_API_KEY is required'),
   ZAPI_INSTANCE: z.string().min(1, 'ZAPI_INSTANCE is required'),
   ZAPI_TOKEN: z.string().min(1, 'ZAPI_TOKEN is required'),

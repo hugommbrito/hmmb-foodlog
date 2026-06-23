@@ -26,6 +26,8 @@ const SYSTEM_PROMPT =
   'Return ONLY valid JSON with this exact structure: ' +
   '{"title":string|null,"overall_confidence":number,"foods":[{"description":string,"quantity":string|null,' +
   '"kcal":number|null,"protein_g":number|null,"fat_g":number|null,"carbs_g":number|null,"confidence":number}]}. ' +
+  'IMPORTANT: write every textual value (title, description, quantity) in Brazilian Portuguese (pt-BR). ' +
+  'Keep the JSON keys exactly as shown above, in English. ' +
   'Confidence values are floats 0.0-1.0. Nutritional fields are null when uncertain. No markdown — JSON only.';
 
 const ALLOWED_MEDIA_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'] as const;
