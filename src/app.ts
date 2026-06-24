@@ -16,8 +16,11 @@ export function buildApp() {
 
   // CAP-3 web app runs on a separate origin. Bearer-token auth (no cookies) makes
   // an open reflect acceptable for personal use; pin WEB_APP_ORIGIN to lock it down.
+  // `methods` must be explicit: @fastify/cors v11 defaults to 'GET,HEAD,POST', which
+  // blocks the web app's PATCH (accept) and DELETE (purge / delete entry) preflights.
   app.register(cors, {
     origin: config.WEB_APP_ORIGIN ?? true,
+    methods: ['GET', 'HEAD', 'POST', 'PATCH', 'DELETE'],
   });
 
   app.register(multipart, {

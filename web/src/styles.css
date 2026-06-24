@@ -97,6 +97,7 @@ header { position: sticky; top: 0; background: var(--bg); padding-bottom: 12px; 
 .card-body { padding: 14px; }
 .card-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
 .card-head .time { color: var(--muted); margin-left: 8px; font-size: 0.85rem; }
+.card-head .totals { color: var(--muted); font-size: 0.85rem; margin-top: 2px; }
 
 .badge { font-size: 0.8rem; padding: 3px 8px; border-radius: 999px; color: #fff; white-space: nowrap; }
 

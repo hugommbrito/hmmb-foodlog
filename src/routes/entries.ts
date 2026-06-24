@@ -161,6 +161,30 @@ export async function entriesRoutes(app: FastifyInstance): Promise<void> {
     return reply.status(200).send(rows[0]);
   });
 
+  // Delete an entry. Scoped to the owner via user_id; food_items are removed by
+  // the ON DELETE CASCADE on food_items.entry_id (no manual cleanup needed).
+  app.delete<{ Params: { id: string } }>('/entries/:id', async (request, reply) => {
+    const userId = await authenticate(request);
+    if (!userId) {
+      return reply.status(401).send({ error: 'Missing or invalid token' });
+    }
+
+    const { id } = request.params;
+    if (!UUID_RE.test(id)) {
+      return reply.status(404).send({ error: 'Entry not found' });
+    }
+
+    const rows = await query<{ id: string }>(
+      'DELETE FROM entries WHERE id = $1 AND user_id = $2 RETURNING id',
+      [id, userId]
+    );
+    if (rows.length === 0) {
+      return reply.status(404).send({ error: 'Entry not found' });
+    }
+
+    return reply.status(200).send({ deleted: true });
+  });
+
   app.post('/entries/photo', async (request, reply) => {
     const userId = await authenticate(request);
     if (!userId) {

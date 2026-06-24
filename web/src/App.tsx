@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   acceptEntry,
   clearToken,
+  deleteEntry,
   fetchEntries,
   fetchRequestLogs,
   getToken,
@@ -29,6 +30,32 @@ function confClass(c: number | null): string {
 
 function pct(c: number): string {
   return `${Math.round(c * 100)}%`;
+}
+
+// Meal totals from the AI-identified foods. Weight is intentionally omitted:
+// `quantity` is free text (e.g. "1 prato"), not a numeric field. A macro that is
+// null across every food is omitted (not shown as "0", which would imply data the
+// AI never computed); non-finite values are ignored. Returns null when there is
+// nothing to show so the row can be skipped — mirrors FoodRow's macro rendering.
+function mealTotals(foods: FoodItem[]): string | null {
+  if (foods.length === 0) return null;
+  const sum = (k: 'kcal' | 'protein_g' | 'fat_g' | 'carbs_g'): number | null => {
+    const vals = foods
+      .map((f) => f[k])
+      .filter((v): v is number => v != null && Number.isFinite(v));
+    return vals.length > 0 ? vals.reduce((a, v) => a + v, 0) : null;
+  };
+  const kcal = sum('kcal');
+  const protein = sum('protein_g');
+  const fat = sum('fat_g');
+  const carbs = sum('carbs_g');
+  const parts = [
+    kcal != null ? `${Math.round(kcal)} kcal` : null,
+    protein != null ? `P ${Math.round(protein)}g` : null,
+    fat != null ? `G ${Math.round(fat)}g` : null,
+    carbs != null ? `C ${Math.round(carbs)}g` : null,
+  ].filter(Boolean);
+  return parts.length > 0 ? parts.join(' · ') : null;
 }
 
 // Unreviewed first; within each group, lowest confidence (0.0 included) on top.
@@ -146,6 +173,25 @@ function Review({ onLogout }: { onLogout: () => void }) {
     [onLogout]
   );
 
+  const handleDelete = useCallback(
+    async (id: string) => {
+      if (!window.confirm('Excluir esta entrada e seus alimentos? Não dá para desfazer.')) {
+        return;
+      }
+      try {
+        await deleteEntry(id);
+        setEntries((prev) => prev.filter((e) => e.id !== id));
+      } catch (err) {
+        if (err instanceof UnauthorizedError) {
+          onLogout();
+          return;
+        }
+        setError((err as Error).message);
+      }
+    },
+    [onLogout]
+  );
+
   // CAP-4: re-run the AI with the user's correction, then merge the returned view
   // back into the card (new foods, reviewed:false). Keeps user_id from the existing
   // entry since the view does not carry it. Updated in place (no re-sort) so the card
@@ -202,6 +248,7 @@ function Review({ onLogout }: { onLogout: () => void }) {
             entry={entry}
             onAccept={handleAccept}
             onReanalyze={handleReanalyze}
+            onDelete={handleDelete}
           />
         ))}
       </ul>
@@ -221,10 +268,12 @@ function EntryCard({
   entry,
   onAccept,
   onReanalyze,
+  onDelete,
 }: {
   entry: EntryWithFoods;
   onAccept: (id: string) => void;
   onReanalyze: (id: string, payload: ReanalyzeRequest) => Promise<void>;
+  onDelete: (id: string) => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [editFoods, setEditFoods] = useState<EditFood[]>([]);
@@ -237,6 +286,7 @@ function EntryCard({
     hour: '2-digit',
     minute: '2-digit',
   });
+  const totals = mealTotals(entry.foods);
 
   const startEdit = () => {
     setEditFoods(
@@ -310,8 +360,11 @@ function EntryCard({
       <div className="card-body">
         <div className="card-head">
           <div>
-            <strong>{entry.title ?? 'Sem título'}</strong>
-            <span className="time">{time}</span>
+            <div>
+              <strong>{entry.title ?? 'Sem título'}</strong>
+              <span className="time">{time}</span>
+            </div>
+            {totals && <div className="totals">{totals}</div>}
           </div>
           <span className={`badge ${confClass(entry.ai_confidence_overall)}`}>
             {pct(entry.ai_confidence_overall)}
@@ -336,6 +389,7 @@ function EntryCard({
                 <button onClick={() => onAccept(entry.id)}>Aceitar</button>
               )}
               <button className="link" onClick={startEdit}>Corrigir</button>
+              <button className="link danger" onClick={() => onDelete(entry.id)}>Excluir</button>
             </div>
           </>
         ) : (

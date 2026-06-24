@@ -60,6 +60,12 @@ export function acceptEntry(id: string): Promise<{ reviewed: boolean }> {
   return request<{ reviewed: boolean }>(`/entries/${id}`, { method: 'PATCH' });
 }
 
+// Delete an entry (and its food_items, via DB cascade). Returns once the row is
+// gone; callers only rely on the request succeeding.
+export function deleteEntry(id: string): Promise<{ deleted: boolean }> {
+  return request<{ deleted: boolean }>(`/entries/${id}`, { method: 'DELETE' });
+}
+
 // CAP-4: correct an entry (free text and/or edited foods) and re-run the AI.
 // Returns the re-analyzed view (new foods, reviewed:false). Synchronous on the
 // backend, so this can take up to the analysis timeout (~50s).
