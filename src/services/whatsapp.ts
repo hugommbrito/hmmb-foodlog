@@ -1,5 +1,6 @@
 import { config } from '../config';
 import { WebhookPayload, FoodItem } from '../types/models';
+import { scrubSecrets, withOutboundAudit } from './audit';
 
 const FETCH_TIMEOUT_MS = 8000;
 const MAX_PHOTO_BYTES = 20 * 1024 * 1024; // 20 MB
@@ -56,7 +57,12 @@ export async function downloadPhoto(imageUrl: string): Promise<PhotoData | null>
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
 
   try {
-    const response = await fetch(imageUrl, { signal: controller.signal });
+    const response = await withOutboundAudit(
+      'z-api',
+      'download-photo',
+      { url: scrubSecrets(imageUrl) },
+      () => fetch(imageUrl, { signal: controller.signal })
+    );
     if (!response.ok) {
       console.error(`[whatsapp] Failed to download image: HTTP ${response.status}`);
       return null;
@@ -97,12 +103,14 @@ export async function sendTextMessage(phone: string, text: string): Promise<void
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
 
   try {
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ phone, message: text }),
-      signal: controller.signal,
-    });
+    const response = await withOutboundAudit('z-api', 'send-text', { phone, message: text }, () =>
+      fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phone, message: text }),
+        signal: controller.signal,
+      })
+    );
 
     if (!response.ok) {
       console.error(`[whatsapp] Failed to send message: HTTP ${response.status}`);

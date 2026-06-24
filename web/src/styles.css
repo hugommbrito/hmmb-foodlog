@@ -161,6 +161,14 @@ button.link.danger { color: var(--red); }
 .log-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85rem; }
 .log-meta { color: var(--muted); font-size: 0.75rem; white-space: nowrap; }
 
+.seg { display: flex; gap: 4px; margin: 12px 0 8px; }
+.seg-btn { background: none; border: 1px solid var(--border); color: var(--muted); padding: 4px 12px; border-radius: 999px; font-size: 0.8rem; }
+.seg-btn.active { color: var(--text); border-color: var(--text); font-weight: 600; }
+
+.dir { font-size: 0.85rem; font-weight: 700; width: 1.1em; text-align: center; }
+.dir-in { color: var(--muted); }
+.dir-out { color: var(--accent, #2563eb); }
+
 .status { font-size: 0.75rem; font-weight: 700; padding: 2px 7px; border-radius: 999px; color: #fff; white-space: nowrap; }
 .st-2xx { background: var(--green); }
 .st-4xx { background: var(--amber); }

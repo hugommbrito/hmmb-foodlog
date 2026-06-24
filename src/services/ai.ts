@@ -2,6 +2,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
 import { config } from '../config';
 import { AiAnalysisResult } from '../types/models';
+import { scrubSecrets, withOutboundAudit } from './audit';
 
 const anthropic = new Anthropic({ apiKey: config.ANTHROPIC_API_KEY, timeout: 60_000 });
 
@@ -37,7 +38,9 @@ async function fetchImageAsBase64(url: string): Promise<{ data: string; media_ty
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 30_000);
   try {
-    const res = await fetch(url, { signal: controller.signal });
+    const res = await withOutboundAudit('r2', 'fetch-image', { url: scrubSecrets(url) }, () =>
+      fetch(url, { signal: controller.signal })
+    );
     if (!res.ok) throw new Error(`HTTP ${res.status} fetching image from R2`);
     const buffer = Buffer.from(await res.arrayBuffer());
     const contentType = (res.headers.get('content-type') ?? 'image/jpeg').split(';')[0].trim();
@@ -83,12 +86,18 @@ export async function analyzeEntry(
     text: `${foodsCtx}${correctionCtx}Analyze the meal in the photo(s) above and return the JSON.`,
   });
 
-  const response = await anthropic.messages.create({
-    model: 'claude-sonnet-4-6',
-    max_tokens: 2048,
-    system: SYSTEM_PROMPT,
-    messages: [{ role: 'user', content }],
-  });
+  const response = await withOutboundAudit(
+    'anthropic',
+    'messages.create',
+    { model: 'claude-sonnet-4-6', photos: photos.length },
+    () =>
+      anthropic.messages.create({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 2048,
+        system: SYSTEM_PROMPT,
+        messages: [{ role: 'user', content }],
+      })
+  );
 
   const rawText = response.content
     .filter((b): b is Anthropic.TextBlock => b.type === 'text')

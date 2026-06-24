@@ -47,11 +47,12 @@ export interface EntryAnalysisView {
   foods: FoodItem[];
 }
 
-// Mirrors the backend `RequestLog` (src/types/models.ts). One persisted inbound
-// HTTP request from the audit module. created_at arrives as an ISO string.
+// Mirrors the backend `RequestLog` (src/types/models.ts). One persisted request
+// log; direction is 'inbound' or 'outbound'. created_at arrives as an ISO string.
 export interface RequestLog {
   id: string;
   created_at: string;
+  direction: string;
   method: string;
   path: string;
   query: string | null;

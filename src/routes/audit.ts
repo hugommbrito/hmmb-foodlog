@@ -38,7 +38,7 @@ async function authenticate(request: FastifyRequest): Promise<string | null> {
 export async function auditRoutes(app: FastifyInstance): Promise<void> {
   // Recent inbound requests, newest first. Optional path substring (`q`) and
   // `before` cursor (ISO timestamp) for narrowing/pagination.
-  app.get<{ Querystring: { limit?: string; q?: string; before?: string } }>(
+  app.get<{ Querystring: { limit?: string; q?: string; before?: string; direction?: string } }>(
     '/audit/requests',
     async (request, reply) => {
       const userId = await authenticate(request);
@@ -57,6 +57,12 @@ export async function auditRoutes(app: FastifyInstance): Promise<void> {
 
       const conditions: string[] = [];
       const params: unknown[] = [];
+      // Only the known directions filter; any other value is ignored (no filter).
+      const direction = request.query.direction;
+      if (direction === 'inbound' || direction === 'outbound') {
+        params.push(direction);
+        conditions.push(`direction = $${params.length}`);
+      }
       if (q) {
         params.push(`%${q}%`);
         conditions.push(`path ILIKE $${params.length}`);

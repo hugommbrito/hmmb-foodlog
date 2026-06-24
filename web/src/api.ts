@@ -71,12 +71,19 @@ export function reanalyzeEntry(id: string, payload: ReanalyzeRequest): Promise<E
   });
 }
 
-// Audit module: list recent inbound requests, optionally filtered by a path
-// substring. `/audit/*` requests are not themselves logged by the backend.
-export function fetchRequestLogs(q?: string, limit = 100): Promise<RequestLog[]> {
+// Audit module: list recent request logs, optionally filtered by a path
+// substring and/or direction. `/audit/*` requests are not themselves logged.
+export function fetchRequestLogs(
+  q?: string,
+  direction?: 'inbound' | 'outbound',
+  limit = 100
+): Promise<RequestLog[]> {
   const params = new URLSearchParams({ limit: String(limit) });
   if (q && q.trim()) {
     params.set('q', q.trim());
+  }
+  if (direction) {
+    params.set('direction', direction);
   }
   return request<RequestLog[]>(`/audit/requests?${params.toString()}`);
 }

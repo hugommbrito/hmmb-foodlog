@@ -97,11 +97,13 @@ export interface ZApiImagePayload {
   height: number;
 }
 
-// One persisted inbound HTTP request (audit module). request_headers is a
+// One persisted request log (audit module). direction is 'inbound' (HTTP
+// request received) or 'outbound' (external service call). request_headers is a
 // redacted name→value map; bodies are scrubbed/truncated text (or null).
 export interface RequestLog {
   id: string;
   created_at: Date;
+  direction: string;
   method: string;
   path: string;
   query: string | null;

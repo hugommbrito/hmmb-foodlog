@@ -1,5 +1,6 @@
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { config } from '../config';
+import { withOutboundAudit } from './audit';
 
 const s3 = new S3Client({
   region: 'auto',
@@ -18,7 +19,12 @@ export async function uploadPhoto(buffer: Buffer, key: string, mimetype: string)
     ContentType: mimetype,
   });
 
-  await s3.send(command);
+  await withOutboundAudit(
+    'r2',
+    'put-object',
+    { key, bytes: buffer.length, mimetype },
+    () => s3.send(command)
+  );
 
   const base = config.R2_PUBLIC_URL.replace(/\/$/, '');
   return `${base}/${key}`;

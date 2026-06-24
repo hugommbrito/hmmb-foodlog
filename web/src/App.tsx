@@ -422,21 +422,24 @@ function statusClass(code: number | null): string {
   return 'st-other';
 }
 
+type DirectionFilter = '' | 'inbound' | 'outbound';
+
 function Audit({ onLogout }: { onLogout: () => void }) {
   const [logs, setLogs] = useState<RequestLog[]>([]);
   const [q, setQ] = useState('');
+  const [direction, setDirection] = useState<DirectionFilter>('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
 
-  // `search` is passed explicitly so this callback only depends on onLogout
-  // (stable) — the mount effect runs once and filtering is triggered manually.
+  // `search`/`dir` are passed explicitly so this callback only depends on
+  // onLogout (stable) — the mount effect runs once and filtering is manual.
   const load = useCallback(
-    async (search: string) => {
+    async (search: string, dir: DirectionFilter) => {
       setLoading(true);
       setError(null);
       try {
-        setLogs(await fetchRequestLogs(search));
+        setLogs(await fetchRequestLogs(search, dir || undefined));
       } catch (err) {
         if (err instanceof UnauthorizedError) {
           onLogout();
@@ -451,8 +454,17 @@ function Audit({ onLogout }: { onLogout: () => void }) {
   );
 
   useEffect(() => {
-    void load('');
+    void load('', '');
   }, [load]);
+
+  // Switching the direction filter reloads immediately with the current query.
+  const selectDirection = useCallback(
+    (dir: DirectionFilter) => {
+      setDirection(dir);
+      void load(q, dir);
+    },
+    [load, q]
+  );
 
   const handlePurge = useCallback(async () => {
     if (!window.confirm('Apagar TODOS os registros de auditoria?')) return;
@@ -476,21 +488,37 @@ function Audit({ onLogout }: { onLogout: () => void }) {
           <h1>Auditoria</h1>
           <button className="link" onClick={onLogout}>Sair</button>
         </div>
+        <div className="seg">
+          {([
+            ['', 'Todos'],
+            ['inbound', 'Entrada'],
+            ['outbound', 'Saída'],
+          ] as [DirectionFilter, string][]).map(([value, label]) => (
+            <button
+              key={value || 'all'}
+              type="button"
+              className={direction === value ? 'seg-btn active' : 'seg-btn'}
+              onClick={() => selectDirection(value)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
         <form
           className="controls"
           onSubmit={(e) => {
             e.preventDefault();
-            void load(q);
+            void load(q, direction);
           }}
         >
           <input
             type="search"
-            placeholder="Filtrar por path (ex.: /webhook)"
+            placeholder="Filtrar por path/serviço (ex.: /webhook, z-api)"
             value={q}
             onChange={(e) => setQ(e.target.value)}
           />
           <button type="submit">Buscar</button>
-          <button type="button" className="link" onClick={() => void load(q)}>Atualizar</button>
+          <button type="button" className="link" onClick={() => void load(q, direction)}>Atualizar</button>
           <button type="button" className="link danger" onClick={() => void handlePurge()}>Limpar</button>
         </form>
       </header>
@@ -531,10 +559,12 @@ function LogRow({
     minute: '2-digit',
     second: '2-digit',
   });
+  const isOutbound = log.direction === 'outbound';
   return (
     <li className="log">
       <button className="log-head" onClick={onToggle}>
         <span className={`status ${statusClass(log.status_code)}`}>{log.status_code ?? '—'}</span>
+        <span className={`dir dir-${isOutbound ? 'out' : 'in'}`}>{isOutbound ? '↑' : '↓'}</span>
         <span className="method">{log.method}</span>
         <span className="log-path">{log.path}</span>
         <span className="log-meta">
@@ -543,11 +573,20 @@ function LogRow({
       </button>
       {open && (
         <div className="log-detail">
-          {log.query && <Field label="Query" value={log.query} />}
-          {log.remote_ip && <Field label="IP" value={log.remote_ip} />}
-          <Field label="Headers" value={JSON.stringify(log.request_headers ?? {}, null, 2)} />
-          <Field label="Request body" value={log.request_body ?? '(vazio)'} />
-          <Field label="Response body" value={log.response_body ?? '(vazio)'} />
+          {isOutbound ? (
+            <>
+              <Field label="Resumo" value={log.request_body ?? '(vazio)'} />
+              <Field label="Resultado" value={log.response_body ?? '(vazio)'} />
+            </>
+          ) : (
+            <>
+              {log.query && <Field label="Query" value={log.query} />}
+              {log.remote_ip && <Field label="IP" value={log.remote_ip} />}
+              <Field label="Headers" value={JSON.stringify(log.request_headers ?? {}, null, 2)} />
+              <Field label="Request body" value={log.request_body ?? '(vazio)'} />
+              <Field label="Response body" value={log.response_body ?? '(vazio)'} />
+            </>
+          )}
         </div>
       )}
     </li>

@@ -73,9 +73,17 @@ Busca por nome de alimento retorna todas as entradas correspondentes em ordem cr
 
 Campo opcional nas entradas. Selecionável com um toque na interface de captura (Shortcut) ou revisão (web app). 4 opções fixas.
 
-## Auditabilidade — captura OUTBOUND (diferido de spec-audit-request-log)
+## Melhorias técnicas diferidas — Auditabilidade OUTBOUND (encontradas na revisão)
 
-Diferido na divisão do módulo de auditabilidade (escopo principal entregou só inbound + storage + API + web). Instrumentar as 5 chamadas a serviços externos para gravar rows `direction='outbound'` em `request_logs` (mesma tabela): `sendTextMessage` e `downloadPhoto` (`src/services/whatsapp.ts`), `anthropic.messages.create` e `fetchImageAsBase64` (`src/services/ai.ts`), `s3.send` (`src/services/storage.ts`). Padrão `withOutboundAudit(target, method, label, summary, run)`: cronometra `run()`, loga sucesso/erro fire-and-forget e **re-lança** o erro original. URLs do Z-API/imagem redigidas via `scrubSecrets`; resumo sem base64 (ex.: Anthropic grava `{model, photos:N}`; Z-API send-text grava `{phone, message}`). Reusa `request_logs`, `scrubSecrets`/`logOutbound` (já criados no escopo inbound) e a tela web (que já filtra por `direction`).
+Entregue em `spec-audit-outbound-logging.md`. Itens abaixo aceitos conscientemente para uso pessoal single-user; revisar se a auditoria virar multiusuário/exposta.
+
+- **PII em summaries outbound**: `send-text` grava `{phone, message}` e `download-photo` grava a URL do Z-API (que pode conter token na query string) em `request_logs.request_body` (`src/services/whatsapp.ts`). `scrubSecrets` só mascara os segredos conhecidos do config — não normaliza telefone nem strips de query-string arbitrária. O webhook *inbound* já loga o mesmo payload, então a exposição marginal é baixa. Mitigação futura: gravar `{phone, chars}` em vez da mensagem inteira e fazer strip de query-string em URLs de terceiros nos summaries.
+- **HTTP não-2xx logado como sucesso**: para as 3 chamadas baseadas em `fetch` (`download-photo`, `send-text`, `fetch-image`), `ok` reflete só que a promise resolveu — uma resposta 4xx/5xx resolve e vira row `status_code=200` `[ok]`. Decisão consciente do spec (menor blast radius; o `console.error` existente ainda registra o HTTP). Mitigação se incomodar: checar `res.ok` dentro do thunk e lançar, ou gravar o status real. (A chamada Anthropic não tem essa lacuna — o SDK lança em não-2xx.)
+- **Retries do worker multiplicam rows outbound**: uma falha em `analyzeEntry` re-tenta até 3× (BullMQ `attempts:3`), e cada tentativa re-busca as fotos do R2 — gerando até 3 rows `anthropic` + 6 rows `fetch-image` por entry, sem chave de correlação (jobId/entryId) que as agrupe. Auditar cada tentativa é o desejado; se virar ruído na tabela (purga manual), adicionar uma coluna/summary de correlação.
+
+## Auditabilidade — captura OUTBOUND — ✅ ENTREGUE em `spec-audit-outbound-logging.md`
+
+As 5 chamadas a serviços externos agora gravam rows `direction='outbound'` em `request_logs` via `withOutboundAudit(target, operation, summary, run)` (`src/services/audit.ts`): `sendTextMessage`/`downloadPhoto` (whatsapp), `anthropic.messages.create`/`fetchImageAsBase64` (ai), `s3.send` (storage). Migration 004 adicionou a coluna `direction` (default `'inbound'`); `logOutbound` e o filtro `direction` na tela web foram criados nesta entrega (NÃO existiam antes, como a nota original presumia). Tradeoffs conscientes registrados acima ("Melhorias técnicas diferidas — Auditabilidade OUTBOUND").
 
 ---
 
