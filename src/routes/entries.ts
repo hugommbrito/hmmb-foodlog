@@ -50,8 +50,11 @@ async function authenticate(request: FastifyRequest): Promise<string | null> {
 // Loads an entry owned by userId with its food_items, or null if missing/not owned.
 // analysis_status derives from ai_cycles (the worker bumps it once analysis persists).
 async function loadEntryView(entryId: string, userId: string): Promise<EntryAnalysisView | null> {
-  const entries = await query<Entry>(
-    'SELECT * FROM entries WHERE id = $1 AND user_id = $2',
+  const entries = await query<Entry & { context: string | null }>(
+    `SELECT e.*, ct.name AS context
+     FROM entries e
+     LEFT JOIN context_tags ct ON ct.id = e.context_tag_id
+     WHERE e.id = $1 AND e.user_id = $2`,
     [entryId, userId]
   );
   if (entries.length === 0) {
@@ -68,6 +71,7 @@ async function loadEntryView(entryId: string, userId: string): Promise<EntryAnal
     photos: entry.photos,
     title: entry.title,
     context: entry.context,
+    context_tag_id: entry.context_tag_id,
     ai_confidence_overall: entry.ai_confidence_overall,
     reviewed: entry.reviewed,
     ai_cycles: entry.ai_cycles,
@@ -118,17 +122,18 @@ export async function entriesRoutes(app: FastifyInstance): Promise<void> {
     }
 
     const entries = await query<EntryWithFoods>(
-      `SELECT e.*,
+      `SELECT e.*, ct.name AS context,
               COALESCE(
                 json_agg(f.* ORDER BY f.confidence ASC, f.id ASC) FILTER (WHERE f.id IS NOT NULL),
                 '[]'
               ) AS foods
        FROM entries e
        LEFT JOIN food_items f ON f.entry_id = e.id
+       LEFT JOIN context_tags ct ON ct.id = e.context_tag_id
        WHERE e.user_id = $1
          AND (e.created_at AT TIME ZONE 'America/Sao_Paulo')::date
              = COALESCE($2::date, (now() AT TIME ZONE 'America/Sao_Paulo')::date)
-       GROUP BY e.id
+       GROUP BY e.id, ct.name
        ORDER BY e.created_at ASC`,
       [userId, date ?? null]
     );
@@ -160,6 +165,52 @@ export async function entriesRoutes(app: FastifyInstance): Promise<void> {
 
     return reply.status(200).send(rows[0]);
   });
+
+  // CAP-9: set or clear an entry's context tag (one-touch selection in review).
+  // Independent of "Accept" — never flips `reviewed`. `context_tag_id: null` clears.
+  app.patch<{ Params: { id: string }; Body: { context_tag_id?: string | null } }>(
+    '/entries/:id/context',
+    async (request, reply) => {
+      const userId = await authenticate(request);
+      if (!userId) {
+        return reply.status(401).send({ error: 'Missing or invalid token' });
+      }
+
+      const { id } = request.params;
+      if (!UUID_RE.test(id)) {
+        return reply.status(404).send({ error: 'Entry not found' });
+      }
+
+      const tagId = request.body?.context_tag_id ?? null;
+      if (tagId !== null) {
+        if (typeof tagId !== 'string' || !UUID_RE.test(tagId)) {
+          return reply.status(400).send({ error: 'Invalid context_tag_id' });
+        }
+        // The tag must belong to the same user (prevents pointing at another user's tag).
+        const tags = await query<{ id: string }>(
+          'SELECT id FROM context_tags WHERE id = $1 AND user_id = $2',
+          [tagId, userId]
+        );
+        if (tags.length === 0) {
+          return reply.status(400).send({ error: 'Tag not found' });
+        }
+      }
+
+      const rows = await query<{ id: string }>(
+        'UPDATE entries SET context_tag_id = $3 WHERE id = $1 AND user_id = $2 RETURNING id',
+        [id, userId, tagId]
+      );
+      if (rows.length === 0) {
+        return reply.status(404).send({ error: 'Entry not found' });
+      }
+
+      const view = await loadEntryView(id, userId);
+      if (!view) {
+        return reply.status(404).send({ error: 'Entry not found' });
+      }
+      return reply.status(200).send(view);
+    }
+  );
 
   // Delete an entry. Scoped to the owner via user_id; food_items are removed by
   // the ON DELETE CASCADE on food_items.entry_id (no manual cleanup needed).

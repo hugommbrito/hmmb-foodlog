@@ -190,3 +190,29 @@ button.link.danger { color: var(--red); }
   max-height: 320px;
   overflow: auto;
 }
+
+/* CAP-9 — one-touch context chips on review cards */
+.context-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+.chip {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  padding: 4px 12px;
+  border-radius: 999px;
+  font-size: 0.8rem;
+}
+.chip.active { background: var(--text); border-color: var(--text); color: #fff; font-weight: 600; }
+
+/* CAP-9 — tag management screen */
+.tag-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 8px; }
+.tag-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.tag-row .tag-name { flex: 1; font-weight: 500; }
+.tag-row input { flex: 1; min-width: 0; }

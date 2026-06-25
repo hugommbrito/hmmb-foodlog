@@ -7,6 +7,14 @@ export interface User {
 
 export type AnalysisStatus = 'pending' | 'done';
 
+// CAP-9: user-managed context taxonomy. Replaces the old fixed enum; isolated per user.
+export interface ContextTag {
+  id: string;
+  user_id: string;
+  name: string;
+  created_at: Date;
+}
+
 export interface PhotoCaptureResponse {
   entry_id: string;
   analysis_status: AnalysisStatus;
@@ -20,7 +28,8 @@ export interface EntryAnalysisView {
   created_at: Date;
   photos: string[];
   title: string | null;
-  context: 'casa' | 'restaurante' | 'trabalho' | 'rua' | null;
+  context: string | null; // resolved tag name (via JOIN); null when unset
+  context_tag_id: string | null;
   ai_confidence_overall: number;
   reviewed: boolean;
   ai_cycles: number;
@@ -34,7 +43,7 @@ export interface Entry {
   created_at: Date;
   photos: string[];
   title: string | null;
-  context: 'casa' | 'restaurante' | 'trabalho' | 'rua' | null;
+  context_tag_id: string | null;
   ai_confidence_overall: number;
   reviewed: boolean;
   ai_cycles: number;
@@ -54,6 +63,7 @@ export interface FoodItem {
 
 // Response shape for the daily review web app: an entry plus its AI-identified foods.
 export interface EntryWithFoods extends Entry {
+  context: string | null; // resolved tag name (via LEFT JOIN context_tags)
   foods: FoodItem[];
 }
 
@@ -70,6 +80,9 @@ export interface AiFoodItem {
 export interface AiAnalysisResult {
   title: string | null;
   overall_confidence: number;
+  // CAP-9: suggested context tag NAME chosen from the user's tags, or null. The
+  // worker maps it to a tag id and only applies it when the entry has no tag yet.
+  context: string | null;
   foods: AiFoodItem[];
 }
 

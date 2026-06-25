@@ -5,6 +5,7 @@ import { config } from './config';
 import { healthRoutes } from './routes/health';
 import { webhookRoutes } from './routes/webhook';
 import { entriesRoutes } from './routes/entries';
+import { tagsRoutes } from './routes/tags';
 import { auditRoutes } from './routes/audit';
 import { registerAuditHooks } from './plugins/audit';
 
@@ -37,6 +38,7 @@ export function buildApp() {
   app.register(healthRoutes);
   app.register(webhookRoutes);
   app.register(entriesRoutes);
+  app.register(tagsRoutes);
   app.register(auditRoutes);
 
   return app;

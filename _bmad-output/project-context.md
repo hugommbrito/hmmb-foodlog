@@ -62,7 +62,7 @@ _Este arquivo contém regras e padrões críticos que agentes de IA devem seguir
 - **Array de fotos:** `photos TEXT[]` — passar como array JavaScript `[url1, url2]` no parâmetro pg (não serializar como JSON)
 - **Migrations:** arquivos `.sql` em `src/db/migrations/` numerados sequencialmente; executar via `npm run db:migrate`
 - **Schema:** extensão `pgcrypto` deve estar habilitada — a migration 001 já faz isso com `CREATE EXTENSION IF NOT EXISTS "pgcrypto"`
-- **Constraint de contexto:** coluna `context` aceita apenas `'casa' | 'restaurante' | 'trabalho' | 'rua'` — validar no código antes do INSERT
+- **Contexto da entrada (CAP-9):** `entries.context_tag_id` é FK para `context_tags` (`ON DELETE SET NULL`) — taxonomia gerenciável por usuário, NÃO mais um enum fixo. Nomes únicos por usuário (case-insensitive), ≤ 30 chars. Leituras resolvem o nome via `LEFT JOIN context_tags`. A migration 005 dropou a coluna `context`/CHECK antigos
 
 ## External Services Rules
 

@@ -1,4 +1,4 @@
-import type { EntryWithFoods, EntryAnalysisView, ReanalyzeRequest, RequestLog } from './types';
+import type { ContextTag, EntryWithFoods, EntryAnalysisView, ReanalyzeRequest, RequestLog } from './types';
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:3000').replace(/\/$/, '');
 const TOKEN_KEY = 'foodlog_api_token';
@@ -74,6 +74,40 @@ export function reanalyzeEntry(id: string, payload: ReanalyzeRequest): Promise<E
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
+  });
+}
+
+// CAP-9 — context tags. GET auto-seeds the four defaults the first time.
+export function fetchTags(): Promise<ContextTag[]> {
+  return request<ContextTag[]>('/tags');
+}
+
+export function createTag(name: string): Promise<ContextTag> {
+  return request<ContextTag>('/tags', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  });
+}
+
+export function renameTag(id: string, name: string): Promise<ContextTag> {
+  return request<ContextTag>(`/tags/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  });
+}
+
+export function deleteTag(id: string): Promise<{ deleted: boolean }> {
+  return request<{ deleted: boolean }>(`/tags/${id}`, { method: 'DELETE' });
+}
+
+// Set (or clear, with null) an entry's context tag. Returns the updated view.
+export function setEntryContext(id: string, contextTagId: string | null): Promise<EntryAnalysisView> {
+  return request<EntryAnalysisView>(`/entries/${id}/context`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ context_tag_id: contextTagId }),
   });
 }
 

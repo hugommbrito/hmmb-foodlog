@@ -39,7 +39,25 @@ async function processJob(job: Job<AnalyzeEntryJobData>): Promise<void> {
   );
   const recentFoods = recentFoodsRows.map((r) => r.description);
 
-  const result = await analyzeEntry(entry.photos, recentFoods, correction);
+  // CAP-9: the user's context tags are offered to the AI as the allowed set.
+  const tags = await query<{ id: string; name: string }>(
+    'SELECT id, name FROM context_tags WHERE user_id = $1',
+    [entry.user_id]
+  );
+
+  const result = await analyzeEntry(entry.photos, recentFoods, tags.map((t) => t.name), correction);
+
+  // Map the AI's suggested context name back to a tag id, but only when the entry
+  // has no tag yet — never clobber a context the user picked (incl. on re-analysis).
+  let contextTagId = entry.context_tag_id;
+  if (contextTagId == null && result.context) {
+    const match = tags.find((t) => t.name.toLowerCase() === result.context!.toLowerCase());
+    if (match) {
+      contextTagId = match.id;
+    } else {
+      console.warn(`[worker] Entry ${entryId}: AI suggested context "${result.context}" with no matching tag`);
+    }
+  }
 
   // A re-analysis that comes back with zero foods must NOT wipe the prior analysis:
   // the DELETE below would commit with no replacement and destroy the user's data.
@@ -60,8 +78,10 @@ async function processJob(job: Job<AnalyzeEntryJobData>): Promise<void> {
     await client.query('BEGIN');
     await client.query('DELETE FROM food_items WHERE entry_id = $1', [entryId]);
     await client.query(
-      `UPDATE entries SET ai_confidence_overall = $2, ai_cycles = ai_cycles + 1, title = $3, reviewed = false WHERE id = $1`,
-      [entryId, result.overall_confidence, result.title]
+      // COALESCE keeps any context the user picked while analysis was running
+      // (read-then-write race) — the AI suggestion only fills an empty slot.
+      `UPDATE entries SET ai_confidence_overall = $2, ai_cycles = ai_cycles + 1, title = $3, reviewed = false, context_tag_id = COALESCE(context_tag_id, $4) WHERE id = $1`,
+      [entryId, result.overall_confidence, result.title, contextTagId]
     );
     for (const food of result.foods) {
       await client.query(

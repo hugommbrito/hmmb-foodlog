@@ -2,16 +2,21 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   acceptEntry,
   clearToken,
+  createTag,
   deleteEntry,
+  deleteTag,
   fetchEntries,
   fetchRequestLogs,
+  fetchTags,
   getToken,
   purgeRequestLogs,
   reanalyzeEntry,
+  renameTag,
+  setEntryContext,
   setToken,
   UnauthorizedError,
 } from './api';
-import type { EntryWithFoods, FoodItem, ReanalyzeRequest, RequestLog } from './types';
+import type { ContextTag, EntryWithFoods, FoodItem, ReanalyzeRequest, RequestLog } from './types';
 
 // YYYY-MM-DD for "today", pinned to the same timezone the backend filters on
 // (America/Sao_Paulo) so the default day matches regardless of the device tz.
@@ -66,7 +71,7 @@ function sortForReview(list: EntryWithFoods[]): EntryWithFoods[] {
   });
 }
 
-type Tab = 'review' | 'audit';
+type Tab = 'review' | 'tags' | 'audit';
 
 export function App() {
   const [token, setTokenState] = useState<string | null>(getToken());
@@ -91,13 +96,21 @@ function Shell({ onLogout }: { onLogout: () => void }) {
           Revisão
         </button>
         <button
+          className={tab === 'tags' ? 'tab active' : 'tab'}
+          onClick={() => setTab('tags')}
+        >
+          Tags
+        </button>
+        <button
           className={tab === 'audit' ? 'tab active' : 'tab'}
           onClick={() => setTab('audit')}
         >
           Auditoria
         </button>
       </nav>
-      {tab === 'review' ? <Review onLogout={onLogout} /> : <Audit onLogout={onLogout} />}
+      {tab === 'review' && <Review onLogout={onLogout} />}
+      {tab === 'tags' && <TagsManager onLogout={onLogout} />}
+      {tab === 'audit' && <Audit onLogout={onLogout} />}
     </div>
   );
 }
@@ -131,8 +144,19 @@ function TokenGate({ onSave }: { onSave: (token: string) => void }) {
 function Review({ onLogout }: { onLogout: () => void }) {
   const [date, setDate] = useState<string>(todayLocal());
   const [entries, setEntries] = useState<EntryWithFoods[]>([]);
+  const [tags, setTags] = useState<ContextTag[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Tags rarely change; load once. A failure here is non-fatal — the chips just
+  // won't render and review still works.
+  useEffect(() => {
+    fetchTags()
+      .then(setTags)
+      .catch((err) => {
+        if (err instanceof UnauthorizedError) onLogout();
+      });
+  }, [onLogout]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -213,6 +237,28 @@ function Review({ onLogout }: { onLogout: () => void }) {
     [onLogout]
   );
 
+  // CAP-9: set/clear the entry's context tag (one touch). Updates only the context
+  // fields in place so the card stays put and other state is untouched.
+  const handleSetContext = useCallback(
+    async (id: string, tagId: string | null) => {
+      try {
+        const view = await setEntryContext(id, tagId);
+        setEntries((prev) =>
+          prev.map((e) =>
+            e.id === id ? { ...e, context: view.context, context_tag_id: view.context_tag_id } : e
+          )
+        );
+      } catch (err) {
+        if (err instanceof UnauthorizedError) {
+          onLogout();
+          return;
+        }
+        setError((err as Error).message);
+      }
+    },
+    [onLogout]
+  );
+
   const pending = useMemo(() => entries.filter((e) => !e.reviewed).length, [entries]);
 
   return (
@@ -246,9 +292,11 @@ function Review({ onLogout }: { onLogout: () => void }) {
           <EntryCard
             key={entry.id}
             entry={entry}
+            tags={tags}
             onAccept={handleAccept}
             onReanalyze={handleReanalyze}
             onDelete={handleDelete}
+            onSetContext={handleSetContext}
           />
         ))}
       </ul>
@@ -266,14 +314,18 @@ interface EditFood {
 
 function EntryCard({
   entry,
+  tags,
   onAccept,
   onReanalyze,
   onDelete,
+  onSetContext,
 }: {
   entry: EntryWithFoods;
+  tags: ContextTag[];
   onAccept: (id: string) => void;
   onReanalyze: (id: string, payload: ReanalyzeRequest) => Promise<void>;
   onDelete: (id: string) => void;
+  onSetContext: (id: string, tagId: string | null) => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [editFoods, setEditFoods] = useState<EditFood[]>([]);
@@ -382,6 +434,22 @@ function EntryCard({
                 ))}
               </ul>
             )}
+            {tags.length > 0 && (
+              <div className="context-chips">
+                {tags.map((t) => (
+                  <button
+                    key={t.id}
+                    type="button"
+                    className={entry.context_tag_id === t.id ? 'chip active' : 'chip'}
+                    onClick={() =>
+                      onSetContext(entry.id, entry.context_tag_id === t.id ? null : t.id)
+                    }
+                  >
+                    {t.name}
+                  </button>
+                ))}
+              </div>
+            )}
             <div className="actions">
               {entry.reviewed ? (
                 <span className="accepted">✓ Revisado</span>
@@ -464,6 +532,172 @@ function FoodRow({ food }: { food: FoodItem }) {
       </span>
       {macros.length > 0 && <span className="macros">{macros.join(' · ')}</span>}
     </li>
+  );
+}
+
+// CAP-9 — tag management: create, rename, delete the user's context tags.
+function TagsManager({ onLogout }: { onLogout: () => void }) {
+  const [tags, setTags] = useState<ContextTag[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [newName, setNewName] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editName, setEditName] = useState('');
+
+  const byName = (a: ContextTag, b: ContextTag) => a.name.localeCompare(b.name);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      setTags(await fetchTags());
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        onLogout();
+        return;
+      }
+      setError((err as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }, [onLogout]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const handleCreate = async () => {
+    const name = newName.trim();
+    if (!name) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const tag = await createTag(name);
+      setTags((prev) => [...prev, tag].sort(byName));
+      setNewName('');
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        onLogout();
+        return;
+      }
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const startEdit = (t: ContextTag) => {
+    setEditingId(t.id);
+    setEditName(t.name);
+    setError(null);
+  };
+  const cancelEdit = () => {
+    setEditingId(null);
+    setEditName('');
+  };
+
+  const handleRename = async (id: string) => {
+    const name = editName.trim();
+    if (!name) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const tag = await renameTag(id, name);
+      setTags((prev) => prev.map((t) => (t.id === id ? tag : t)).sort(byName));
+      cancelEdit();
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        onLogout();
+        return;
+      }
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleDelete = async (t: ContextTag) => {
+    if (!window.confirm(`Apagar a tag "${t.name}"? Entradas que a usam ficam sem contexto.`)) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await deleteTag(t.id);
+      setTags((prev) => prev.filter((x) => x.id !== t.id));
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        onLogout();
+        return;
+      }
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="review">
+      <header>
+        <div className="header-row">
+          <h1>Tags de contexto</h1>
+          <button className="link" onClick={onLogout}>Sair</button>
+        </div>
+        <form
+          className="controls"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void handleCreate();
+          }}
+        >
+          <input
+            type="text"
+            placeholder="Nova tag (ex.: padaria)"
+            value={newName}
+            maxLength={30}
+            onChange={(e) => setNewName(e.target.value)}
+            disabled={busy}
+          />
+          <button type="submit" disabled={busy || !newName.trim()}>Adicionar</button>
+        </form>
+      </header>
+
+      {error && <div className="banner error">{error}</div>}
+      {loading && <div className="banner">Carregando…</div>}
+      {!loading && !error && tags.length === 0 && <div className="empty">Nenhuma tag.</div>}
+
+      <ul className="tag-list">
+        {tags.map((t) => (
+          <li key={t.id} className="tag-row">
+            {editingId === t.id ? (
+              <>
+                <input
+                  type="text"
+                  value={editName}
+                  maxLength={30}
+                  onChange={(e) => setEditName(e.target.value)}
+                  disabled={busy}
+                  autoFocus
+                />
+                <button onClick={() => void handleRename(t.id)} disabled={busy || !editName.trim()}>
+                  Salvar
+                </button>
+                <button className="link" onClick={cancelEdit} disabled={busy}>Cancelar</button>
+              </>
+            ) : (
+              <>
+                <span className="tag-name">{t.name}</span>
+                <button className="link" onClick={() => startEdit(t)} disabled={busy}>Renomear</button>
+                <button className="link danger" onClick={() => void handleDelete(t)} disabled={busy}>
+                  Apagar
+                </button>
+              </>
+            )}
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 

@@ -33,6 +33,17 @@ Todos aceitos conscientemente para uso pessoal single-user. Revisar se o canal v
 - **Confirmação não-durável**: a confirmação é fire-and-forget em memória; se o processo reiniciar durante a re-análise, o usuário não recebe o resumo (a re-análise em si fica persistida). Mitigação: rastrear promises em voo no shutdown gracioso, ou job durável de confirmação.
 - **Borda de fuso na virada do dia**: foto às 23:59 + correção às 00:01 (America/Sao_Paulo) caem em `::date` diferentes → "Não encontrei uma entrada de hoje". Inerente à escolha "só entries de hoje"; revisitar se incomodar.
 
+## Melhorias técnicas diferidas — CAP-9 tags de contexto (encontradas na revisão)
+
+Aceitas conscientemente para uso pessoal single-user; revisar se virar multiusuário/exposto.
+
+- **FK violation → 500/retry ao apagar uma tag concorrentemente**: em `PATCH /entries/:id/context` (`src/routes/entries.ts`) há janela TOCTOU entre o SELECT de posse da tag e o UPDATE; e no worker (`src/workers/analyze-entry.ts`) entre buscar as tags e o UPDATE com a tag sugerida pela IA. Se a tag for apagada nesse instante, o UPDATE viola a FK (`23503`) → 500 no endpoint ou job falho/retentado no worker. Janela de milissegundos e ator único (mesma classe de concorrência já diferida em CAP-4/CAP-5). Mitigação se exposto: `try/catch` do código `23503` → 400/`SET NULL`, ou lock por entry.
+- **Match IA case-insensitive em JS vs `lower()` do Postgres**: o worker casa `result.context` com as tags via `String.toLowerCase()` em vez do `lower()` do PG (índice único). Idêntico para pt-BR; só divergiria em locales exóticos (ex.: I turco). Trocar por match em SQL se houver tags fora de pt-BR.
+
+## Melhoria técnica diferida — runner de migration não-transacional (pré-existente)
+
+- **`src/db/migrate.ts` roda cada arquivo `.sql` via um único `pool.query(sql)` sem `BEGIN/COMMIT`**: uma falha no meio de um arquivo deixa estado parcial (sem tabela de migrations aplicadas, o re-run depende de `IF NOT EXISTS`/`ON CONFLICT`, que não corrige definições divergentes de uma aplicação parcial anterior). Afeta todas as migrations, não só a 005. Mitigação: envolver a execução de cada arquivo em transação no runner.
+
 ---
 
 ## Spec B — AI Pipeline (CAP-2)

@@ -19,14 +19,19 @@ const aiFoodItemSchema = z.object({
 const aiResponseSchema = z.object({
   title: z.string().nullable(),
   overall_confidence: z.number().min(0).max(1),
+  // CAP-9: suggested context tag name. Defaults to null if the model omits it so a
+  // missing field never fails the whole analysis.
+  context: z.string().nullable().default(null),
   foods: z.array(aiFoodItemSchema),
 });
 
 const SYSTEM_PROMPT =
   'You are a nutritionist AI analyzing meal photos. Identify all food items visible. ' +
   'Return ONLY valid JSON with this exact structure: ' +
-  '{"title":string|null,"overall_confidence":number,"foods":[{"description":string,"quantity":string|null,' +
+  '{"title":string|null,"overall_confidence":number,"context":string|null,"foods":[{"description":string,"quantity":string|null,' +
   '"kcal":number|null,"protein_g":number|null,"fat_g":number|null,"carbs_g":number|null,"confidence":number}]}. ' +
+  'The "context" field is the meal setting: choose EXACTLY one name from the list of available contexts given in the ' +
+  'user message (copy it verbatim), or null if none fits or none are provided. ' +
   'IMPORTANT: write every textual value (title, description, quantity) in Brazilian Portuguese (pt-BR). ' +
   'Keep the JSON keys exactly as shown above, in English. ' +
   'Confidence values are floats 0.0-1.0. Nutritional fields are null when uncertain. No markdown — JSON only.';
@@ -56,6 +61,7 @@ async function fetchImageAsBase64(url: string): Promise<{ data: string; media_ty
 export async function analyzeEntry(
   photos: string[],
   recentFoods: string[],
+  contextTags: string[],
   correction?: string
 ): Promise<AiAnalysisResult> {
   const content: Anthropic.MessageParam['content'] = [];
@@ -72,6 +78,10 @@ export async function analyzeEntry(
     ? `Recent foods for this user: ${recentFoods.join(', ')}. `
     : '';
 
+  const contextCtx = contextTags.length > 0
+    ? `Available contexts (choose exactly one for "context", verbatim, or null): ${contextTags.join(', ')}. `
+    : 'No contexts available; set "context" to null. ';
+
   // CAP-4: on a re-analysis the user has corrected a previous result. Treat the
   // correction as ground truth — keep the descriptions the user gave and only
   // recompute the nutrition/confidence; do not second-guess the corrected items.
@@ -83,7 +93,7 @@ export async function analyzeEntry(
 
   content.push({
     type: 'text',
-    text: `${foodsCtx}${correctionCtx}Analyze the meal in the photo(s) above and return the JSON.`,
+    text: `${foodsCtx}${contextCtx}${correctionCtx}Analyze the meal in the photo(s) above and return the JSON.`,
   });
 
   const response = await withOutboundAudit(

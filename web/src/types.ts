@@ -12,13 +12,20 @@ export interface FoodItem {
   confidence: number;
 }
 
+// CAP-9: user-managed context tag.
+export interface ContextTag {
+  id: string;
+  name: string;
+}
+
 export interface EntryWithFoods {
   id: string;
   user_id: string;
   created_at: string;
   photos: string[];
   title: string | null;
-  context: 'casa' | 'restaurante' | 'trabalho' | 'rua' | null;
+  context: string | null; // resolved tag name for display
+  context_tag_id: string | null;
   ai_confidence_overall: number;
   reviewed: boolean;
   ai_cycles: number;
@@ -39,7 +46,8 @@ export interface EntryAnalysisView {
   created_at: string;
   photos: string[];
   title: string | null;
-  context: 'casa' | 'restaurante' | 'trabalho' | 'rua' | null;
+  context: string | null; // resolved tag name for display
+  context_tag_id: string | null;
   ai_confidence_overall: number;
   reviewed: boolean;
   ai_cycles: number;
