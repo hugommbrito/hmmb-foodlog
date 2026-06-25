@@ -86,6 +86,26 @@ export function reanalyzeEntry(id: string, payload: ReanalyzeRequest): Promise<E
   });
 }
 
+// Manual web entry: free-text description (required), optional photo(s) and a chosen
+// date/time. Sent as multipart/form-data — `request` only sets Authorization, so the
+// browser fills the multipart boundary. Synchronous on the backend (up to ~timeout):
+// the AI segregates the foods and estimates weights/macros. Returns the new entry view.
+export function createManualEntry(input: {
+  description: string;
+  createdAt?: string; // ISO 8601 instant
+  photos?: File[];
+}): Promise<EntryAnalysisView> {
+  const form = new FormData();
+  form.append('description', input.description);
+  if (input.createdAt) {
+    form.append('created_at', input.createdAt);
+  }
+  for (const photo of input.photos ?? []) {
+    form.append('photo', photo);
+  }
+  return request<EntryAnalysisView>('/entries/manual', { method: 'POST', body: form });
+}
+
 // CAP-9 — context tags. GET auto-seeds the four defaults the first time.
 export function fetchTags(): Promise<ContextTag[]> {
   return request<ContextTag[]>('/tags');

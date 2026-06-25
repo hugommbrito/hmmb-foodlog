@@ -8,6 +8,9 @@ import { User, Entry, FoodItem, EntryWithFoods, EntryAnalysisView, PhotoCaptureR
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+// Floor for a manually picked created_at: the app has no data before this, so an
+// earlier date is a typo, not a real backdated meal.
+const MIN_ENTRY_DATE = Date.UTC(2020, 0, 1);
 
 // Shape check (DATE_RE) is not enough: '2026-13-40' / '2026-02-30' pass the regex
 // but blow up at the Postgres `::date` cast (500). Validate calendar validity too.
@@ -334,6 +337,141 @@ export async function entriesRoutes(app: FastifyInstance): Promise<void> {
       foods: view?.foods ?? [],
     };
     return reply.status(201).send(body);
+  });
+
+  // Manual web entry: the user describes a meal in free text (photo optional) and
+  // optionally picks the date/time. Mirrors the photo-capture flow — synchronous AI
+  // analysis that segregates the foods and estimates weights/macros from the text
+  // (and photo, if any). The user never types macros; the AI is the only source.
+  app.post('/entries/manual', async (request, reply) => {
+    const userId = await authenticate(request);
+    if (!userId) {
+      return reply.status(401).send({ error: 'Missing or invalid token' });
+    }
+
+    if (!request.isMultipart()) {
+      return reply.status(400).send({ error: 'Expected multipart/form-data' });
+    }
+
+    // Pass 1: drain every part. Buffer/validate images and capture the text fields.
+    // Every part must be consumed even after a validation error, or @fastify/multipart
+    // leaves the request hanging (same rule as POST /entries/photo).
+    const photos: { buffer: Buffer; mimetype: string }[] = [];
+    let description = '';
+    let createdAtRaw = '';
+    let validationError: string | null = null;
+    try {
+      for await (const part of request.parts()) {
+        if (part.type === 'file') {
+          const buffer = await part.toBuffer();
+          if (validationError) {
+            continue;
+          }
+          if (!part.mimetype.startsWith('image/')) {
+            validationError = `Unsupported file type: ${part.mimetype}`;
+            continue;
+          }
+          if (buffer.length === 0) {
+            validationError = 'Empty image file';
+            continue;
+          }
+          photos.push({ buffer, mimetype: part.mimetype });
+        } else if (part.fieldname === 'description') {
+          description = typeof part.value === 'string' ? part.value : String(part.value ?? '');
+        } else if (part.fieldname === 'created_at') {
+          createdAtRaw = typeof part.value === 'string' ? part.value : String(part.value ?? '');
+        }
+      }
+    } catch (err) {
+      const code = (err as { code?: string }).code;
+      if (code === 'FST_REQ_FILE_TOO_LARGE') {
+        return reply.status(413).send({ error: 'Photo exceeds maximum allowed size' });
+      }
+      if (code === 'FST_FILES_LIMIT') {
+        return reply.status(413).send({ error: 'Too many photos in one request' });
+      }
+      request.log.error(err, '[entries] Failed to read multipart upload');
+      return reply.status(400).send({ error: 'Malformed multipart upload' });
+    }
+
+    if (validationError) {
+      return reply.status(400).send({ error: validationError });
+    }
+
+    description = description.trim();
+    if (!description) {
+      return reply.status(400).send({ error: 'Description is required' });
+    }
+
+    // Optional created_at: a valid ISO 8601 instant, never in the future (60s skew
+    // tolerance for client/server clock drift) and not absurdly far in the past
+    // (guards a fat-fingered year that would file the entry on an off-screen day).
+    // Absent → the DB DEFAULT now() applies.
+    let createdAt: Date | null = null;
+    if (createdAtRaw.trim()) {
+      const parsed = new Date(createdAtRaw.trim());
+      if (Number.isNaN(parsed.getTime())) {
+        return reply.status(400).send({ error: 'Invalid created_at; expected an ISO 8601 timestamp' });
+      }
+      if (parsed.getTime() > Date.now() + 60_000) {
+        return reply.status(400).send({ error: 'created_at cannot be in the future' });
+      }
+      if (parsed.getTime() < MIN_ENTRY_DATE) {
+        return reply.status(400).send({ error: 'created_at is too far in the past' });
+      }
+      createdAt = parsed;
+    }
+
+    // Pass 2: upload to R2 BEFORE any DB write (project invariant). No-op when text-only.
+    const photoUrls: string[] = [];
+    try {
+      for (const photo of photos) {
+        const key = `photos/${userId}/${Date.now()}-${uuidv4()}`;
+        photoUrls.push(await uploadPhoto(photo.buffer, key, photo.mimetype));
+      }
+    } catch (err) {
+      request.log.error(err, `[entries] R2 upload failed for user ${userId}`);
+      return reply.status(500).send({ error: 'Failed to store photo' });
+    }
+
+    // created_at is passed explicitly ONLY when the user picked one — otherwise the
+    // column is omitted so DEFAULT now() applies. Deliberate exception to the
+    // "never pass created_at manually" convention, justified by the date/time picker.
+    let entryId: string;
+    try {
+      const rows = createdAt
+        ? await query<{ id: string }>(
+            `INSERT INTO entries (user_id, photos, created_at, ai_confidence_overall, reviewed, ai_cycles)
+             VALUES ($1, $2, $3, 0.0, false, 0) RETURNING id`,
+            [userId, photoUrls, createdAt]
+          )
+        : await query<{ id: string }>(
+            `INSERT INTO entries (user_id, photos, ai_confidence_overall, reviewed, ai_cycles)
+             VALUES ($1, $2, 0.0, false, 0) RETURNING id`,
+            [userId, photoUrls]
+          );
+      entryId = rows[0].id;
+    } catch (err) {
+      request.log.error(err, `[entries] DB insert failed for user ${userId}`);
+      return reply.status(500).send({ error: 'Failed to save entry' });
+    }
+
+    // Synchronous analysis like the photo capture: wait for the result, but a
+    // timeout/failure must NOT fail the capture — fall back to analysis_status:'pending'.
+    try {
+      const job = await enqueueAnalysis(entryId, undefined, description);
+      await waitForAnalysis(job, config.ANALYSIS_WAIT_TIMEOUT_MS);
+    } catch (err) {
+      request.log.warn(
+        `[entries] Analysis not ready for entry ${entryId}: ${(err as Error).message}`
+      );
+    }
+
+    const view = await loadEntryView(entryId, userId);
+    if (!view) {
+      return reply.status(500).send({ error: 'Failed to load entry' });
+    }
+    return reply.status(201).send(view);
   });
 
   app.get<{ Params: { id: string } }>('/entries/:id', async (request, reply) => {

@@ -9,7 +9,7 @@ let worker: Worker<AnalyzeEntryJobData> | null = null;
 let workerConnection: IORedis | null = null;
 
 async function processJob(job: Job<AnalyzeEntryJobData>): Promise<void> {
-  const { entryId, correction } = job.data;
+  const { entryId, correction, description } = job.data;
 
   const entries = await query<Entry>('SELECT * FROM entries WHERE id = $1', [entryId]);
   if (entries.length === 0) {
@@ -25,8 +25,13 @@ async function processJob(job: Job<AnalyzeEntryJobData>): Promise<void> {
     return;
   }
 
-  if (entry.photos.length === 0) {
-    console.warn(`[worker] Entry ${entryId} has no photos, skipping`);
+  // A manual web entry carries a text description instead of a photo, so a
+  // photoless entry is only a no-op when there's nothing to analyze at all.
+  // A correction also counts: re-analyzing/correcting a text-only entry (CAP-4
+  // edits or a CAP-5 WhatsApp reply) carries `correction` but no `description`,
+  // and must NOT be silently skipped here.
+  if (entry.photos.length === 0 && !description && !correction) {
+    console.warn(`[worker] Entry ${entryId} has no photos, description, or correction, skipping`);
     return;
   }
 
@@ -45,7 +50,7 @@ async function processJob(job: Job<AnalyzeEntryJobData>): Promise<void> {
     [entry.user_id]
   );
 
-  const result = await analyzeEntry(entry.photos, recentFoods, tags.map((t) => t.name), correction);
+  const result = await analyzeEntry(entry.photos, recentFoods, tags.map((t) => t.name), correction, description);
 
   // Map the AI's suggested context name back to a tag id, but only when the entry
   // has no tag yet — never clobber a context the user picked (incl. on re-analysis).

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   acceptEntry,
   clearToken,
+  createManualEntry,
   createShareLink,
   createTag,
   deleteEntry,
@@ -32,6 +33,30 @@ import type {
 // (America/Sao_Paulo) so the default day matches regardless of the device tz.
 function todayLocal(): string {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo' }).format(new Date());
+}
+
+// The America/Sao_Paulo calendar day (YYYY-MM-DD) of an ISO instant — used to
+// decide which review day a freshly created manual entry belongs to.
+function localDay(iso: string): string {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo' }).format(new Date(iso));
+}
+
+// "now" as a datetime-local value (YYYY-MM-DDTHH:mm) in America/Sao_Paulo, for the
+// manual-entry form default. Minute precision truncates the seconds, so this is
+// always slightly in the past — never tripping the backend's "no future" guard.
+function nowLocalDateTime(): string {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Sao_Paulo',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(new Date());
+  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? '';
+  const hour = get('hour') === '24' ? '00' : get('hour'); // some engines emit "24" at midnight
+  return `${get('year')}-${get('month')}-${get('day')}T${hour}:${get('minute')}`;
 }
 
 // Confidence thresholds from the data-model contract.
@@ -182,6 +207,7 @@ function Review({ onLogout }: { onLogout: () => void }) {
   const [tagFilter, setTagFilter] = useState<TagFilter>('all');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showManual, setShowManual] = useState(false);
 
   // Tags rarely change; load once. A failure here is non-fatal — the chips just
   // won't render and review still works.
@@ -294,6 +320,30 @@ function Review({ onLogout }: { onLogout: () => void }) {
     [onLogout]
   );
 
+  // Create a manual entry from the form, then surface it: jump to the entry's
+  // (SP-local) day if it differs from the one shown, else refetch the current day.
+  // Re-throws on failure so the form can show the error and stay open.
+  const handleCreateManual = useCallback(
+    async (input: { description: string; createdAt?: string; photos?: File[] }) => {
+      try {
+        const view = await createManualEntry(input);
+        setShowManual(false);
+        const day = localDay(view.created_at);
+        if (day === date) {
+          await load();
+        } else {
+          setDate(day); // different day → switch the selector; the load effect refetches
+        }
+      } catch (err) {
+        if (err instanceof UnauthorizedError) {
+          onLogout();
+        }
+        throw err;
+      }
+    },
+    [date, load, onLogout]
+  );
+
   const pending = useMemo(() => entries.filter((e) => !e.reviewed).length, [entries]);
 
   // Tag id → tag, so each card can resolve its own color/name without a new payload field.
@@ -335,6 +385,13 @@ function Review({ onLogout }: { onLogout: () => void }) {
             {sortDir === 'desc' ? '↓ Mais recentes' : '↑ Mais antigas'}
           </button>
           <span className="pending">{pending} pendente(s)</span>
+          <button
+            type="button"
+            className="new-entry"
+            onClick={() => setShowManual((s) => !s)}
+          >
+            + Novo registro
+          </button>
         </div>
         {tags.length > 0 && (
           <div className="seg tag-filter">
@@ -367,6 +424,10 @@ function Review({ onLogout }: { onLogout: () => void }) {
         )}
       </header>
 
+      {showManual && (
+        <ManualEntryForm onSubmit={handleCreateManual} onCancel={() => setShowManual(false)} />
+      )}
+
       {error && <div className="banner error">{error}</div>}
       {loading && <div className="banner">Carregando…</div>}
       {!loading && !error && entries.length === 0 && (
@@ -390,6 +451,84 @@ function Review({ onLogout }: { onLogout: () => void }) {
           />
         ))}
       </ul>
+    </div>
+  );
+}
+
+// Manual-entry form: free-text description (required), an optional photo set and a
+// date/time (defaults to now in SP). Submitting runs the synchronous AI analysis,
+// so the button shows a busy state until the new entry comes back.
+function ManualEntryForm({
+  onSubmit,
+  onCancel,
+}: {
+  onSubmit: (input: { description: string; createdAt?: string; photos?: File[] }) => Promise<void>;
+  onCancel: () => void;
+}) {
+  const [description, setDescription] = useState('');
+  const [when, setWhen] = useState<string>(nowLocalDateTime());
+  const [photos, setPhotos] = useState<File[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const submit = async () => {
+    const desc = description.trim();
+    if (!desc || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      // datetime-local is São Paulo wall-clock time. Pin it to SP's fixed offset
+      // (-03:00 — Brazil has no DST since 2019) so the instant is correct regardless
+      // of the device timezone. Empty → omit so the backend's DEFAULT now() applies.
+      const createdAt = when ? new Date(`${when}:00-03:00`).toISOString() : undefined;
+      await onSubmit({ description: desc, createdAt, photos });
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="manual-form">
+      <h2>Novo registro manual</h2>
+      <label>
+        O que você comeu?
+        <textarea
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          placeholder="Ex.: 2 ovos mexidos, uma fatia de pão integral e um café com leite"
+          rows={3}
+          autoFocus
+        />
+      </label>
+      <label>
+        Data e hora
+        <input
+          type="datetime-local"
+          value={when}
+          max={nowLocalDateTime()}
+          onChange={(e) => setWhen(e.target.value)}
+        />
+      </label>
+      <label>
+        Foto (opcional)
+        <input
+          type="file"
+          accept="image/*"
+          multiple
+          onChange={(e) => setPhotos(e.target.files ? Array.from(e.target.files) : [])}
+        />
+      </label>
+      {error && <div className="banner error">{error}</div>}
+      <div className="manual-actions">
+        <button type="button" onClick={() => void submit()} disabled={!description.trim() || busy}>
+          {busy ? 'Analisando…' : 'Criar e analisar'}
+        </button>
+        <button type="button" className="link" onClick={onCancel} disabled={busy}>
+          Cancelar
+        </button>
+      </div>
     </div>
   );
 }

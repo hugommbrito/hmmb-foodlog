@@ -26,7 +26,10 @@ const aiResponseSchema = z.object({
 });
 
 const SYSTEM_PROMPT =
-  'You are a nutritionist AI analyzing meal photos. Identify all food items visible. ' +
+  'You are a nutritionist AI analyzing meals from photos and/or a text description. ' +
+  'Identify all food items present (visible in the photo or described in the text). ' +
+  'When working from a text description, segregate the individual foods and estimate ' +
+  'their quantities/weights and nutrition. ' +
   'Return ONLY valid JSON with this exact structure: ' +
   '{"title":string|null,"overall_confidence":number,"context":string|null,"foods":[{"description":string,"quantity":string|null,' +
   '"kcal":number|null,"protein_g":number|null,"fat_g":number|null,"carbs_g":number|null,"confidence":number}]}. ' +
@@ -62,7 +65,8 @@ export async function analyzeEntry(
   photos: string[],
   recentFoods: string[],
   contextTags: string[],
-  correction?: string
+  correction?: string,
+  description?: string
 ): Promise<AiAnalysisResult> {
   const content: Anthropic.MessageParam['content'] = [];
 
@@ -91,9 +95,27 @@ export async function analyzeEntry(
       `Correção do usuário:\n${correction.trim()}\n\n`
     : '';
 
+  // Manual web entry: the user typed what they ate. Treat it as ground truth for
+  // WHAT was consumed; the AI still segregates the items and estimates the weights
+  // and nutrition (the "user never types macros" invariant holds).
+  const hasDescription = Boolean(description && description.trim());
+  const descriptionCtx = hasDescription
+    ? `O usuário descreveu a refeição em texto. Trate a descrição como a verdade do que foi consumido: ` +
+      `segregue os alimentos individuais e estime as quantidades/pesos e a nutrição (kcal, macros) de cada um. ` +
+      `Descrição do usuário:\n${description!.trim()}\n\n`
+    : '';
+
+  // The meal can come from a photo, a text description, or both — point the closing
+  // instruction at whatever sources are actually present.
+  const target = photos.length > 0
+    ? hasDescription
+      ? 'in the photo(s) above and the description provided'
+      : 'in the photo(s) above'
+    : 'described above';
+
   content.push({
     type: 'text',
-    text: `${foodsCtx}${contextCtx}${correctionCtx}Analyze the meal in the photo(s) above and return the JSON.`,
+    text: `${foodsCtx}${contextCtx}${correctionCtx}${descriptionCtx}Analyze the meal ${target} and return the JSON.`,
   });
 
   const response = await withOutboundAudit(

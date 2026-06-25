@@ -139,6 +139,10 @@ export interface AnalyzeEntryJobData {
   // CAP-4: when present, the job is a re-analysis driven by a user correction
   // (composed from free text and/or granular food edits). Absent on initial capture.
   correction?: string;
+  // Manual web entry: the user's free-text description of the meal. The AI segregates
+  // the foods and estimates quantities/weights and macros from it (with the photo too,
+  // if any). Set only on a manual-entry capture; absent on photo capture and re-analysis.
+  description?: string;
 }
 
 // CAP-4: body of POST /entries/:id/reanalyze. The user corrects an entry via free

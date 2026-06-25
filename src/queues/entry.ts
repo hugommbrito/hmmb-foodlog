@@ -13,12 +13,14 @@ eventsConnection.on('error', (err) => console.error('[queue-events] Redis error:
 const queue = new Queue<AnalyzeEntryJobData>('analyze-entry', { connection });
 const queueEvents = new QueueEvents('analyze-entry', { connection: eventsConnection });
 
-// `correction` is set on a CAP-4 re-analysis; left undefined on initial capture.
+// `correction` is set on a CAP-4 re-analysis; `description` on a manual web entry.
+// Both are left undefined on initial photo capture.
 export async function enqueueAnalysis(
   entryId: string,
-  correction?: string
+  correction?: string,
+  description?: string
 ): Promise<Job<AnalyzeEntryJobData>> {
-  return queue.add('analyze-entry', { entryId, correction }, {
+  return queue.add('analyze-entry', { entryId, correction, description }, {
     attempts: 3,
     backoff: { type: 'exponential', delay: 1000 },
   });
