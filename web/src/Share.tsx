@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from 'react';
-import { fetchShared, ShareExpiredError, ShareInvalidError } from './api';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { fetchShared, fetchSharedPatterns, ShareExpiredError, ShareInvalidError } from './api';
 import { FoodRow, mealTotals } from './App';
-import type { SharedEntry, SharedPayload } from './types';
+import type { PatternsPayload, SharedEntry, SharedPayload } from './types';
 
 // Local day key in the same timezone the backend filters on, so grouping matches
 // the period boundaries exactly.
@@ -70,12 +70,22 @@ function monthLabel(y: number, m: number): string {
   return label.charAt(0).toUpperCase() + label.slice(1);
 }
 
-type View = 'calendar' | 'list';
+type View = 'calendar' | 'list' | 'patterns';
+type PatternsStatus = 'idle' | 'loading' | 'ok' | 'error' | 'gone';
 
 export function PublicShare({ token }: { token: string }) {
   const [data, setData] = useState<SharedPayload | null>(null);
   const [status, setStatus] = useState<'loading' | 'ok' | 'expired' | 'invalid' | 'error'>('loading');
   const [view, setView] = useState<View>('calendar');
+
+  // CAP-7b: pattern analysis is fetched lazily — only once the "Padrões" tab is
+  // opened — so the calendar/list view never waits on (or pays for) the AI call.
+  const [patterns, setPatterns] = useState<PatternsPayload | null>(null);
+  const [patternsStatus, setPatternsStatus] = useState<PatternsStatus>('idle');
+  // Dedupe guard for the lazy fetch. Using a ref (not the status) avoids a stuck
+  // 'loading' state when the user toggles away mid-fetch: the request always runs
+  // to completion (token is fixed for this view) and `onRetry` resets the ref.
+  const patternsRequested = useRef(false);
 
   useEffect(() => {
     let active = true;
@@ -95,6 +105,25 @@ export function PublicShare({ token }: { token: string }) {
       active = false;
     };
   }, [token]);
+
+  // Fetch patterns the first time the tab is opened. `onRetry` clears the ref to
+  // allow a re-fetch. Backend caches, so any repeat is a cheap cache hit.
+  useEffect(() => {
+    if (view !== 'patterns' || patternsRequested.current) return;
+    patternsRequested.current = true;
+    setPatternsStatus('loading');
+    fetchSharedPatterns(token)
+      .then((p) => {
+        setPatterns(p);
+        setPatternsStatus('ok');
+      })
+      .catch((err) => {
+        if (err instanceof ShareExpiredError || err instanceof ShareInvalidError) setPatternsStatus('gone');
+        else setPatternsStatus('error');
+      });
+    // patternsStatus is a dep so `onRetry` (idle reset) re-triggers; the ref guard
+    // prevents this from re-fetching on the idle→loading→ok transitions.
+  }, [view, patternsStatus, token]);
 
   if (status === 'loading') {
     return (
@@ -143,16 +172,79 @@ export function PublicShare({ token }: { token: string }) {
           >
             Lista
           </button>
+          <button
+            type="button"
+            className={view === 'patterns' ? 'seg-btn active' : 'seg-btn'}
+            onClick={() => setView('patterns')}
+          >
+            Padrões
+          </button>
         </div>
       </header>
 
-      {data.entries.length === 0 ? (
+      {view === 'patterns' ? (
+        <PatternsView
+          status={patternsStatus}
+          data={patterns}
+          onRetry={() => {
+            patternsRequested.current = false;
+            setPatternsStatus('idle');
+          }}
+        />
+      ) : data.entries.length === 0 ? (
         <div className="empty">Sem registros neste período.</div>
       ) : view === 'calendar' ? (
         <CalendarView entries={data.entries} start={data.period_start} end={data.period_end} />
       ) : (
         <ListView entries={data.entries} />
       )}
+    </div>
+  );
+}
+
+function PatternsView({
+  status,
+  data,
+  onRetry,
+}: {
+  status: PatternsStatus;
+  data: PatternsPayload | null;
+  onRetry: () => void;
+}) {
+  if (status === 'idle' || status === 'loading') {
+    return <div className="banner">Analisando padrões com IA…</div>;
+  }
+  if (status === 'gone') {
+    return <div className="empty">Link indisponível.</div>;
+  }
+  if (status === 'error') {
+    return (
+      <div className="empty">
+        <p>Não foi possível gerar a análise.</p>
+        <button type="button" className="seg-btn" onClick={onRetry}>
+          Tentar de novo
+        </button>
+      </div>
+    );
+  }
+  // status === 'ok'
+  if (!data || data.insufficient || !data.analysis || data.analysis.observations.length === 0) {
+    return <div className="empty">Dados insuficientes para a análise de padrões neste período.</div>;
+  }
+  const { observations, summary } = data.analysis;
+  return (
+    <div className="patterns">
+      {summary && <p className="patterns-summary">{summary}</p>}
+      <ul className="pattern-list">
+        {observations.map((o, i) => (
+          <li className="pattern-card" key={i}>
+            <span className="pattern-cat">{o.category}</span>
+            <strong className="pattern-title">{o.title}</strong>
+            <p className="pattern-detail">{o.detail}</p>
+          </li>
+        ))}
+      </ul>
+      <p className="patterns-meta">Análise gerada por IA a partir dos registros do período.</p>
     </div>
   );
 }

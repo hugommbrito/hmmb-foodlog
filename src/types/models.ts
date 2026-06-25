@@ -39,6 +39,30 @@ export interface SharedEntry {
   foods: FoodItem[];
 }
 
+// CAP-7b: AI-detected behavioral pattern shown in the nutritionist's read-only
+// view. `category` groups the observation (e.g. horários, macros, contexto);
+// `title` is a short headline; `detail` is the explanation. All text is pt-BR.
+export interface PatternObservation {
+  category: string;
+  title: string;
+  detail: string;
+}
+
+// CAP-7b: the cached result of the pattern analysis for a share link. At least 3
+// observations when generated; `summary` is an optional overarching note.
+export interface PatternAnalysis {
+  observations: PatternObservation[];
+  summary: string | null;
+}
+
+// CAP-7b: one entry fed (as a compact text line) to the pattern analysis. Built
+// from the period's SharedEntry rows — never photos/user_id/PII.
+export interface PatternEntryInput {
+  created_at: Date;
+  context: string | null;
+  foods: FoodItem[];
+}
+
 export interface PhotoCaptureResponse {
   entry_id: string;
   analysis_status: AnalysisStatus;

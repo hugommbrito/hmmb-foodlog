@@ -1,7 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
 import { config } from '../config';
-import { AiAnalysisResult } from '../types/models';
+import { AiAnalysisResult, PatternAnalysis, PatternEntryInput } from '../types/models';
 import { scrubSecrets, withOutboundAudit } from './audit';
 
 const anthropic = new Anthropic({ apiKey: config.ANTHROPIC_API_KEY, timeout: 60_000 });
@@ -122,4 +122,103 @@ export async function analyzeEntry(
 
   const parsed: unknown = JSON.parse(rawText.slice(start, end + 1));
   return aiResponseSchema.parse(parsed);
+}
+
+// CAP-7b: pattern analysis for the nutritionist's read-only view.
+
+const patternAnalysisSchema = z.object({
+  // The SPEC requires AT LEAST 3 observations. Enforce it here so a deficient
+  // model response throws (→ 502, retryable) instead of being cached as a
+  // spec-violating result.
+  observations: z
+    .array(
+      z.object({
+        category: z.string(),
+        title: z.string(),
+        detail: z.string(),
+      })
+    )
+    .min(3),
+  // `summary` defaults to null if the model omits it so a missing field never
+  // fails the whole analysis (same convention as `context` in aiResponseSchema).
+  summary: z.string().nullable().default(null),
+});
+
+const PATTERNS_SYSTEM_PROMPT =
+  'You are a nutritionist AI analyzing a patient food log to surface BEHAVIORAL PATTERNS for the ' +
+  "patient's nutritionist. You receive one text line per meal (date+time in America/Sao_Paulo, " +
+  'context/setting, and the foods with macros). Identify recurring patterns across the period. ' +
+  'Return ONLY valid JSON with this exact structure: ' +
+  '{"observations":[{"category":string,"title":string,"detail":string}],"summary":string|null}. ' +
+  'Provide AT LEAST 3 observations. Cover these angles WHEN the data supports them (do not invent): ' +
+  'recurring meal times/schedules, variation of macros by day type (e.g. weekday vs weekend), and ' +
+  'correlations between context/setting and food choices. Base every claim ONLY on the provided data — ' +
+  'never fabricate numbers or trends not present. ' +
+  'IMPORTANT: write every textual value (category, title, detail, summary) in Brazilian Portuguese (pt-BR). ' +
+  'Keep the JSON keys exactly as shown above, in English. No markdown — JSON only.';
+
+// One compact text line per entry: "DD/MM HH:MM · <context> · <food (kcal/P/G/C); ...>".
+// Macros are omitted per-field when null. Photos/user_id/PII are never included.
+function formatEntryLine(e: PatternEntryInput): string {
+  const dt = new Intl.DateTimeFormat('pt-BR', {
+    timeZone: 'America/Sao_Paulo',
+    day: '2-digit',
+    month: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(e.created_at);
+  const ctx = e.context ?? 'sem contexto';
+  const foods =
+    e.foods.length > 0
+      ? e.foods
+          .map((f) => {
+            const macros = [
+              f.kcal != null ? `${f.kcal}kcal` : null,
+              f.protein_g != null ? `P${f.protein_g}` : null,
+              f.fat_g != null ? `G${f.fat_g}` : null,
+              f.carbs_g != null ? `C${f.carbs_g}` : null,
+            ]
+              .filter(Boolean)
+              .join('/');
+            return macros ? `${f.description} (${macros})` : f.description;
+          })
+          .join('; ')
+      : 'sem alimentos identificados';
+  return `${dt} · ${ctx} · ${foods}`;
+}
+
+export async function analyzePatterns(entries: PatternEntryInput[]): Promise<PatternAnalysis> {
+  const digest = entries.map(formatEntryLine).join('\n');
+
+  const response = await withOutboundAudit(
+    'anthropic',
+    'analyze-patterns',
+    { model: 'claude-sonnet-4-6', entries: entries.length },
+    () =>
+      anthropic.messages.create({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 1536,
+        system: PATTERNS_SYSTEM_PROMPT,
+        messages: [
+          {
+            role: 'user',
+            content: `Food log for the period (one line per meal):\n${digest}\n\nReturn the JSON.`,
+          },
+        ],
+      })
+  );
+
+  const rawText = response.content
+    .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+    .map((b) => b.text)
+    .join('');
+
+  const start = rawText.indexOf('{');
+  const end = rawText.lastIndexOf('}');
+  if (start === -1 || end === -1) {
+    throw new Error(`[ai] No JSON found in patterns response: ${rawText.slice(0, 200)}`);
+  }
+
+  const parsed: unknown = JSON.parse(rawText.slice(start, end + 1));
+  return patternAnalysisSchema.parse(parsed);
 }

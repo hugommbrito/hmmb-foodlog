@@ -2,6 +2,7 @@ import type {
   ContextTag,
   EntryWithFoods,
   EntryAnalysisView,
+  PatternsPayload,
   ReanalyzeRequest,
   RequestLog,
   ShareLink,
@@ -159,6 +160,23 @@ export async function fetchShared(token: string): Promise<SharedPayload> {
     throw new Error(`Erro ${res.status}`);
   }
   return res.json() as Promise<SharedPayload>;
+}
+
+// CAP-7b: public, tokenless read of the AI pattern analysis for the period.
+// Computed+cached server-side on first access. 502 → analysis couldn't be
+// generated (the UI offers a retry). Reuses the share error classes for 410/404.
+export async function fetchSharedPatterns(token: string): Promise<PatternsPayload> {
+  const res = await fetch(`${API_BASE}/shared/${encodeURIComponent(token)}/patterns`);
+  if (res.status === 410) {
+    throw new ShareExpiredError('Link expirado');
+  }
+  if (res.status === 404) {
+    throw new ShareInvalidError('Link inválido');
+  }
+  if (!res.ok) {
+    throw new Error(`Erro ${res.status}`);
+  }
+  return res.json() as Promise<PatternsPayload>;
 }
 
 // Audit module: list recent request logs, optionally filtered by a path

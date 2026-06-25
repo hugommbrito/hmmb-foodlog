@@ -87,6 +87,27 @@ export interface SharedPayload {
   entries: SharedEntry[];
 }
 
+// CAP-7b: AI-detected behavioral pattern shown in the nutritionist's view.
+export interface PatternObservation {
+  category: string;
+  title: string;
+  detail: string;
+}
+
+export interface PatternAnalysis {
+  observations: PatternObservation[];
+  summary: string | null;
+}
+
+// Payload of the public GET /shared/:token/patterns. Either the analysis (with
+// the timestamp it was generated/cached) or `insufficient` when there's too
+// little data to analyze (no Claude call was made).
+export interface PatternsPayload {
+  generated_at?: string | null; // ISO
+  analysis?: PatternAnalysis;
+  insufficient?: boolean;
+}
+
 // Mirrors the backend `RequestLog` (src/types/models.ts). One persisted request
 // log; direction is 'inbound' or 'outbound'. created_at arrives as an ISO string.
 export interface RequestLog {

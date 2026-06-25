@@ -289,3 +289,19 @@ button.link.danger { color: var(--red); }
 .shared-day-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 8px; border-bottom: 1px solid var(--border); padding-bottom: 4px; }
 .shared-day-head h2 { margin: 0; font-size: 1rem; }
 .ctx-tag { margin-left: 8px; font-size: 0.72rem; color: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px; }
+
+/* CAP-7b: AI pattern analysis (nutritionist view) */
+.patterns { display: flex; flex-direction: column; gap: 12px; }
+.patterns-summary { margin: 0 0 4px; color: var(--text); }
+.pattern-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 10px; }
+.pattern-card {
+  background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 12px;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.pattern-cat {
+  align-self: flex-start; font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.03em;
+  color: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px;
+}
+.pattern-title { font-size: 0.95rem; }
+.pattern-detail { margin: 0; color: var(--muted); font-size: 0.9rem; line-height: 1.4; }
+.patterns-meta { color: var(--muted); font-size: 0.75rem; text-align: center; margin: 4px 0 0; }

@@ -1,6 +1,7 @@
 import { FastifyInstance, FastifyRequest } from 'fastify';
 import { query } from '../db/client';
-import { SharedEntry, User } from '../types/models';
+import { analyzePatterns } from '../services/ai';
+import { PatternAnalysis, SharedEntry, User } from '../types/models';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -43,6 +44,33 @@ interface ShareLinkRow {
   period_end: string;
   expires_at: Date;
   created_at: Date;
+}
+
+// Owner's entries within the period (inclusive, America/Sao_Paulo day), each with
+// its foods. Only public fields are selected — no user_id/PII reaches the client.
+// Shared by the public read view (CAP-7a) and the pattern analysis (CAP-7b).
+function loadPeriodEntries(userId: string, periodStart: string, periodEnd: string): Promise<SharedEntry[]> {
+  return query<SharedEntry>(
+    `SELECT e.id, e.created_at, e.photos, e.title, ct.name AS context,
+            COALESCE(
+              json_agg(f.* ORDER BY f.confidence DESC, f.id ASC) FILTER (WHERE f.id IS NOT NULL),
+              '[]'
+            ) AS foods
+     FROM entries e
+     LEFT JOIN food_items f ON f.entry_id = e.id
+     LEFT JOIN context_tags ct ON ct.id = e.context_tag_id
+     WHERE e.user_id = $1
+       AND (e.created_at AT TIME ZONE 'America/Sao_Paulo')::date
+           BETWEEN $2::date AND $3::date
+     GROUP BY e.id, ct.name
+     ORDER BY e.created_at ASC`,
+    [userId, periodStart, periodEnd]
+  );
+}
+
+// Local day key in the same timezone the period filter uses, for the sufficiency guard.
+function spDayKey(d: Date | string): string {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo' }).format(new Date(d));
 }
 
 export async function shareRoutes(app: FastifyInstance): Promise<void> {
@@ -168,30 +196,85 @@ export async function shareRoutes(app: FastifyInstance): Promise<void> {
       return reply.status(410).send({ error: 'Link expirado' });
     }
 
-    // Owner's entries within the period (inclusive, America/Sao_Paulo day), each with
-    // its foods. Only public fields are selected — no user_id/PII reaches the client.
-    const entries = await query<SharedEntry>(
-      `SELECT e.id, e.created_at, e.photos, e.title, ct.name AS context,
-              COALESCE(
-                json_agg(f.* ORDER BY f.confidence DESC, f.id ASC) FILTER (WHERE f.id IS NOT NULL),
-                '[]'
-              ) AS foods
-       FROM entries e
-       LEFT JOIN food_items f ON f.entry_id = e.id
-       LEFT JOIN context_tags ct ON ct.id = e.context_tag_id
-       WHERE e.user_id = $1
-         AND (e.created_at AT TIME ZONE 'America/Sao_Paulo')::date
-             BETWEEN $2::date AND $3::date
-       GROUP BY e.id, ct.name
-       ORDER BY e.created_at ASC`,
-      [link.user_id, link.period_start, link.period_end]
-    );
+    const entries = await loadPeriodEntries(link.user_id, link.period_start, link.period_end);
 
     return reply.status(200).send({
       period_start: link.period_start,
       period_end: link.period_end,
       expires_at: link.expires_at,
       entries,
+    });
+  });
+
+  // PUBLIC, no auth: CAP-7b — AI behavioral-pattern analysis for the period.
+  // Lazy + cached: computed (one paid Claude call) on first access and stored on
+  // the link; later accesses serve the cache. Separate endpoint so the calendar/
+  // list view (GET /shared/:token) stays fast and never triggers the AI.
+  app.get<{ Params: { token: string } }>('/shared/:token/patterns', async (request, reply) => {
+    const raw = request.params.token;
+    const n = /^\d+$/.test(raw) ? Number.parseInt(raw, 10) : NaN;
+    if (!Number.isInteger(n) || n <= 0) {
+      return reply.status(404).send({ error: 'Link inválido' });
+    }
+
+    const links = await query<{
+      id: string;
+      user_id: string;
+      period_start: string;
+      period_end: string;
+      expires_at: Date;
+      analysis_json: PatternAnalysis | null;
+      analysis_generated_at: Date | null;
+    }>(
+      `SELECT id, user_id,
+         to_char(period_start, 'YYYY-MM-DD') AS period_start,
+         to_char(period_end, 'YYYY-MM-DD') AS period_end,
+         expires_at, analysis_json, analysis_generated_at
+       FROM share_links WHERE share_no = $1`,
+      [n]
+    );
+    if (links.length === 0) {
+      return reply.status(404).send({ error: 'Link inválido' });
+    }
+    const link = links[0];
+    if (new Date(link.expires_at).getTime() <= Date.now()) {
+      return reply.status(410).send({ error: 'Link expirado' });
+    }
+
+    // Cache hit: serve the stored analysis, no Claude call.
+    if (link.analysis_json) {
+      return reply.status(200).send({
+        generated_at: link.analysis_generated_at,
+        analysis: link.analysis_json,
+      });
+    }
+
+    const entries = await loadPeriodEntries(link.user_id, link.period_start, link.period_end);
+
+    // Need entries spread over >= 3 local days for meaningful patterns; otherwise
+    // skip the (paid) Claude call and don't cache, so a later access can recompute.
+    const distinctDays = new Set(entries.map((e) => spDayKey(e.created_at)));
+    if (distinctDays.size < 3) {
+      return reply.status(200).send({ insufficient: true });
+    }
+
+    let analysis: PatternAnalysis;
+    try {
+      analysis = await analyzePatterns(entries);
+    } catch (err) {
+      request.log.error({ err: (err as Error).message }, '[share] pattern analysis failed');
+      return reply.status(502).send({ error: 'Não foi possível gerar a análise' });
+    }
+
+    const saved = await query<{ analysis_generated_at: Date }>(
+      `UPDATE share_links SET analysis_json = $1, analysis_generated_at = now()
+       WHERE id = $2 RETURNING analysis_generated_at`,
+      [JSON.stringify(analysis), link.id]
+    );
+
+    return reply.status(200).send({
+      generated_at: saved[0]?.analysis_generated_at ?? null,
+      analysis,
     });
   });
 }

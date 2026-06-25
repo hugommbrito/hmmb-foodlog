@@ -3,7 +3,7 @@
 > Mapa único de **o que já foi feito × o que falta**, com ordem sugerida por sessão.
 > Fonte da verdade do escopo: [SPEC.md](../specs/spec-foodlog/SPEC.md) (CAP-1 … CAP-10).
 > Dívida técnica diferida vive em [deferred-work.md](./deferred-work.md).
-> Atualizado: 2026-06-25 (CAP-7a entregue — link read-only p/ nutricionista; CAP-7b diferida).
+> Atualizado: 2026-06-25 (CAP-7b entregue — análise de padrões por IA na view do nutricionista; CAP-7 completa).
 
 ---
 
@@ -18,6 +18,7 @@
 | CAP-5 (texto) | Correção via WhatsApp por **texto** | [spec-cap-5-whatsapp-text-correction.md](./spec-cap-5-whatsapp-text-correction.md) |
 | CAP-9 | Tags de contexto **gerenciáveis** (CRUD) + seleção com um toque + sugestão por IA | [spec-cap-9-context-tags.md](./spec-cap-9-context-tags.md) |
 | CAP-7a | Link temporário read-only p/ nutricionista (validade + calendário com miniaturas + lista com macros) | [spec-cap-7a-nutritionist-share-link.md](./spec-cap-7a-nutritionist-share-link.md) |
+| CAP-7b | Análise de padrões por IA na view do nutricionista (lazy + cache no link) | [spec-cap-7b-nutritionist-pattern-analysis.md](./spec-cap-7b-nutritionist-pattern-analysis.md) |
 | CAP-10 | Autenticação por número de WhatsApp (sem login) | [foundation](./spec-foundation-whatsapp-capture-ai.md) |
 
 **Trabalho de suporte entregue (fora das CAPs):** auditoria inbound ([spec-audit-request-log.md](./spec-audit-request-log.md)), auditoria outbound ([spec-audit-outbound-logging.md](./spec-audit-outbound-logging.md)), correções do card web + delete + totais ([spec-web-card-fixes-delete-totals.md](./spec-web-card-fixes-delete-totals.md)).
@@ -28,21 +29,16 @@
 
 > A ordem abaixo equilibra **valor × esforço × dependências**. É uma sugestão — reordene se a prioridade mudar. Cada item é uma sessão (criar spec → implementar → review).
 
-### 1. CAP-7b — Análise de padrões por IA na view do nutricionista (resto da CAP-7)
-- **Contexto:** a CAP-7 foi **dividida** (2026-06-25). A **CAP-7a** (link com validade + acesso sem login via `/share/:token` + calendário com miniaturas + lista com macros) já foi **entregue** — ver tabela ✅ acima.
-- **CAP-7b (esta entrada):** a 3ª visualização — **análise de padrões por IA** — foi separada (novas chamadas de IA + custo, e sobreposição com CAP-6). Detalhes em [deferred-work.md](./deferred-work.md); **candidata a fundir com a CAP-6** (mesmo motor de detecção de padrões, exposto no relatório semanal autenticado E na view pública read-only). Reusa a infra de share-link da 7a.
-- **Atenção:** acesso é **somente leitura** — acesso interativo do nutricionista é Non-goal explícito.
-
-### 2. CAP-8 — Busca no histórico por nome de alimento
+### 1. CAP-8 — Busca no histórico por nome de alimento
 - **Por quê:** valor direto pro usuário e pras views do nutricionista; independente das demais.
 - **Success (SPEC):** busca por "pizza" retorna todas as entradas com pizza identificada, ordem cronológica.
 
-### 3. CAP-6 — Relatório semanal de padrões comportamentais
-- **Por quê agora:** já existe CAP-9 — se beneficia dos dados de contexto acumulados (correlação contexto × escolhas).
+### 2. CAP-6 — Relatório semanal de padrões comportamentais
+- **Por quê agora:** já existe CAP-9 — se beneficia dos dados de contexto acumulados (correlação contexto × escolhas). **Reusar o motor `analyzePatterns`** já criado na CAP-7b (`src/services/ai.ts`), expondo-o no relatório semanal autenticado.
 - **Toca:** geração automática semanal, **somente no web app** (sem entrega ativa por WhatsApp/e-mail — constraint do SPEC).
 - **Success (SPEC):** ≥3 observações de padrão (horários recorrentes, variação de macros por tipo de dia, correlações contexto × escolha).
 
-### 4. CAP-5 (áudio) — Correção via WhatsApp por **áudio**
+### 3. CAP-5 (áudio) — Correção via WhatsApp por **áudio**
 - **Por quê por último:** introduz **nova dependência externa** (Claude não transcreve áudio nativo → precisa de Whisper/Groq + chave + custo). Reusa o `processCorrection` já existente (`src/routes/webhook.ts`).
 - **Implementar:** extrair `audio.audioUrl` do payload Z-API → baixar → transcrever → alimentar o pipeline de correção da CAP-5 texto.
 
