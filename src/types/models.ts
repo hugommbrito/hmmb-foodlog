@@ -12,6 +12,7 @@ export interface ContextTag {
   id: string;
   user_id: string;
   name: string;
+  color: string; // HEX #RRGGBB; default '#9ca3af' until the user picks one
   created_at: Date;
 }
 

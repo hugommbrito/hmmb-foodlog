@@ -11,10 +11,10 @@ import {
   getToken,
   purgeRequestLogs,
   reanalyzeEntry,
-  renameTag,
   setEntryContext,
   setToken,
   UnauthorizedError,
+  updateTag,
 } from './api';
 import type { ContextTag, EntryWithFoods, FoodItem, ReanalyzeRequest, RequestLog } from './types';
 
@@ -63,15 +63,31 @@ function mealTotals(foods: FoodItem[]): string | null {
   return parts.length > 0 ? parts.join(' · ') : null;
 }
 
-// Unreviewed first; within each group, lowest confidence (0.0 included) on top.
-function sortForReview(list: EntryWithFoods[]): EntryWithFoods[] {
+type SortDir = 'desc' | 'asc';
+
+// Pure creation-order sort: 'desc' = newest first, 'asc' = oldest first.
+function sortByCreated(list: EntryWithFoods[], dir: SortDir): EntryWithFoods[] {
   return [...list].sort((a, b) => {
-    if (a.reviewed !== b.reviewed) return a.reviewed ? 1 : -1;
-    return a.ai_confidence_overall - b.ai_confidence_overall;
+    const diff = new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+    return dir === 'asc' ? diff : -diff;
   });
 }
 
+// Readable text color (near-black or white) for a HEX #RRGGBB background, by luminance.
+function textOn(hex: string): string {
+  const n = parseInt(hex.slice(1), 16);
+  if (Number.isNaN(n)) return '#fff';
+  const r = (n >> 16) & 255;
+  const g = (n >> 8) & 255;
+  const b = n & 255;
+  const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  return lum > 0.6 ? '#111' : '#fff';
+}
+
 type Tab = 'review' | 'tags' | 'audit';
+
+// Tag filter selection: a specific tag id, or the two synthetic options.
+type TagFilter = 'all' | 'none' | string;
 
 export function App() {
   const [token, setTokenState] = useState<string | null>(getToken());
@@ -145,6 +161,8 @@ function Review({ onLogout }: { onLogout: () => void }) {
   const [date, setDate] = useState<string>(todayLocal());
   const [entries, setEntries] = useState<EntryWithFoods[]>([]);
   const [tags, setTags] = useState<ContextTag[]>([]);
+  const [sortDir, setSortDir] = useState<SortDir>('desc');
+  const [tagFilter, setTagFilter] = useState<TagFilter>('all');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -163,7 +181,7 @@ function Review({ onLogout }: { onLogout: () => void }) {
     setError(null);
     try {
       const data = await fetchEntries(date);
-      setEntries(sortForReview(data));
+      setEntries(data);
     } catch (err) {
       if (err instanceof UnauthorizedError) {
         onLogout();
@@ -261,6 +279,20 @@ function Review({ onLogout }: { onLogout: () => void }) {
 
   const pending = useMemo(() => entries.filter((e) => !e.reviewed).length, [entries]);
 
+  // Tag id → tag, so each card can resolve its own color/name without a new payload field.
+  const tagsById = useMemo(() => new Map(tags.map((t) => [t.id, t])), [tags]);
+
+  // Apply the tag filter, then the creation-order sort. Pending count above stays
+  // over ALL entries (it is a backlog signal, not a view of the filtered list).
+  const visible = useMemo(() => {
+    const filtered = entries.filter((e) => {
+      if (tagFilter === 'all') return true;
+      if (tagFilter === 'none') return e.context_tag_id === null;
+      return e.context_tag_id === tagFilter;
+    });
+    return sortByCreated(filtered, sortDir);
+  }, [entries, tagFilter, sortDir]);
+
   return (
     <div className="review">
       <header>
@@ -277,8 +309,45 @@ function Review({ onLogout }: { onLogout: () => void }) {
               if (e.target.value) setDate(e.target.value);
             }}
           />
+          <button
+            type="button"
+            className="link sort-toggle"
+            onClick={() => setSortDir((d) => (d === 'desc' ? 'asc' : 'desc'))}
+            title="Alternar ordem por data de criação"
+          >
+            {sortDir === 'desc' ? '↓ Mais recentes' : '↑ Mais antigas'}
+          </button>
           <span className="pending">{pending} pendente(s)</span>
         </div>
+        {tags.length > 0 && (
+          <div className="seg tag-filter">
+            <button
+              type="button"
+              className={tagFilter === 'all' ? 'seg-btn active' : 'seg-btn'}
+              onClick={() => setTagFilter('all')}
+            >
+              Todas
+            </button>
+            {tags.map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                className={tagFilter === t.id ? 'seg-btn active' : 'seg-btn'}
+                onClick={() => setTagFilter(t.id)}
+              >
+                <span className="dot-color" style={{ background: t.color }} />
+                {t.name}
+              </button>
+            ))}
+            <button
+              type="button"
+              className={tagFilter === 'none' ? 'seg-btn active' : 'seg-btn'}
+              onClick={() => setTagFilter('none')}
+            >
+              Sem tag
+            </button>
+          </div>
+        )}
       </header>
 
       {error && <div className="banner error">{error}</div>}
@@ -286,13 +355,17 @@ function Review({ onLogout }: { onLogout: () => void }) {
       {!loading && !error && entries.length === 0 && (
         <div className="empty">Nenhuma entrada neste dia.</div>
       )}
+      {!loading && !error && entries.length > 0 && visible.length === 0 && (
+        <div className="empty">Nenhuma entrada para este filtro.</div>
+      )}
 
       <ul className="cards">
-        {entries.map((entry) => (
+        {visible.map((entry) => (
           <EntryCard
             key={entry.id}
             entry={entry}
             tags={tags}
+            currentTag={entry.context_tag_id ? tagsById.get(entry.context_tag_id) ?? null : null}
             onAccept={handleAccept}
             onReanalyze={handleReanalyze}
             onDelete={handleDelete}
@@ -315,6 +388,7 @@ interface EditFood {
 function EntryCard({
   entry,
   tags,
+  currentTag,
   onAccept,
   onReanalyze,
   onDelete,
@@ -322,6 +396,7 @@ function EntryCard({
 }: {
   entry: EntryWithFoods;
   tags: ContextTag[];
+  currentTag: ContextTag | null;
   onAccept: (id: string) => void;
   onReanalyze: (id: string, payload: ReanalyzeRequest) => Promise<void>;
   onDelete: (id: string) => void;
@@ -333,6 +408,7 @@ function EntryCard({
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
 
   const time = new Date(entry.created_at).toLocaleTimeString('pt-BR', {
     hour: '2-digit',
@@ -435,19 +511,51 @@ function EntryCard({
               </ul>
             )}
             {tags.length > 0 && (
-              <div className="context-chips">
-                {tags.map((t) => (
+              <div className="context">
+                {currentTag ? (
                   <button
-                    key={t.id}
                     type="button"
-                    className={entry.context_tag_id === t.id ? 'chip active' : 'chip'}
-                    onClick={() =>
-                      onSetContext(entry.id, entry.context_tag_id === t.id ? null : t.id)
-                    }
+                    className="tag-badge"
+                    style={{ background: currentTag.color, color: textOn(currentTag.color) }}
+                    onClick={() => setPickerOpen((o) => !o)}
+                    title="Trocar ou limpar a tag"
                   >
-                    {t.name}
+                    {currentTag.name}
                   </button>
-                ))}
+                ) : (
+                  <button
+                    type="button"
+                    className="tag-badge empty"
+                    onClick={() => setPickerOpen((o) => !o)}
+                  >
+                    + Tag
+                  </button>
+                )}
+                {pickerOpen && (
+                  <div className="context-chips">
+                    {tags.map((t) => {
+                      const active = entry.context_tag_id === t.id;
+                      return (
+                        <button
+                          key={t.id}
+                          type="button"
+                          className={active ? 'chip active' : 'chip'}
+                          style={
+                            active
+                              ? { background: t.color, borderColor: t.color, color: textOn(t.color) }
+                              : { borderColor: t.color }
+                          }
+                          onClick={() => {
+                            onSetContext(entry.id, active ? null : t.id);
+                            setPickerOpen(false);
+                          }}
+                        >
+                          {t.name}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             )}
             <div className="actions">
@@ -541,6 +649,7 @@ function TagsManager({ onLogout }: { onLogout: () => void }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [newName, setNewName] = useState('');
+  const [newColor, setNewColor] = useState('#9ca3af');
   const [busy, setBusy] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
@@ -573,7 +682,7 @@ function TagsManager({ onLogout }: { onLogout: () => void }) {
     setBusy(true);
     setError(null);
     try {
-      const tag = await createTag(name);
+      const tag = await createTag(name, newColor);
       setTags((prev) => [...prev, tag].sort(byName));
       setNewName('');
     } catch (err) {
@@ -603,7 +712,7 @@ function TagsManager({ onLogout }: { onLogout: () => void }) {
     setBusy(true);
     setError(null);
     try {
-      const tag = await renameTag(id, name);
+      const tag = await updateTag(id, { name });
       setTags((prev) => prev.map((t) => (t.id === id ? tag : t)).sort(byName));
       cancelEdit();
     } catch (err) {
@@ -614,6 +723,22 @@ function TagsManager({ onLogout }: { onLogout: () => void }) {
       setError((err as Error).message);
     } finally {
       setBusy(false);
+    }
+  };
+
+  // Persist a color change for an existing tag. Kept off the `busy` flag so the
+  // native picker stays responsive; updates the row in place on success.
+  const handleColor = async (id: string, color: string) => {
+    setError(null);
+    try {
+      const tag = await updateTag(id, { color });
+      setTags((prev) => prev.map((t) => (t.id === id ? tag : t)));
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        onLogout();
+        return;
+      }
+      setError((err as Error).message);
     }
   };
 
@@ -659,6 +784,14 @@ function TagsManager({ onLogout }: { onLogout: () => void }) {
             onChange={(e) => setNewName(e.target.value)}
             disabled={busy}
           />
+          <input
+            type="color"
+            className="color-swatch"
+            value={newColor}
+            onChange={(e) => setNewColor(e.target.value)}
+            disabled={busy}
+            title="Cor da tag"
+          />
           <button type="submit" disabled={busy || !newName.trim()}>Adicionar</button>
         </form>
       </header>
@@ -687,6 +820,19 @@ function TagsManager({ onLogout }: { onLogout: () => void }) {
               </>
             ) : (
               <>
+                <input
+                  type="color"
+                  className="color-swatch"
+                  defaultValue={t.color}
+                  // Persist on blur, not onChange: React's onChange for <input type=color>
+                  // fires on every drag tick, which would spray PATCH requests. The guard
+                  // skips a no-op save when the value did not actually change.
+                  onBlur={(e) => {
+                    if (e.target.value !== t.color) void handleColor(t.id, e.target.value);
+                  }}
+                  disabled={busy}
+                  title="Cor da tag"
+                />
                 <span className="tag-name">{t.name}</span>
                 <button className="link" onClick={() => startEdit(t)} disabled={busy}>Renomear</button>
                 <button className="link danger" onClick={() => void handleDelete(t)} disabled={busy}>

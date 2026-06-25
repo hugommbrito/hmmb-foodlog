@@ -82,19 +82,20 @@ export function fetchTags(): Promise<ContextTag[]> {
   return request<ContextTag[]>('/tags');
 }
 
-export function createTag(name: string): Promise<ContextTag> {
+export function createTag(name: string, color?: string): Promise<ContextTag> {
   return request<ContextTag>('/tags', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name }),
+    body: JSON.stringify(color ? { name, color } : { name }),
   });
 }
 
-export function renameTag(id: string, name: string): Promise<ContextTag> {
+// Update a tag's name and/or color (at least one). Backend leaves omitted fields untouched.
+export function updateTag(id: string, patch: { name?: string; color?: string }): Promise<ContextTag> {
   return request<ContextTag>(`/tags/${id}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name }),
+    body: JSON.stringify(patch),
   });
 }
 

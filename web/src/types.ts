@@ -12,10 +12,12 @@ export interface FoodItem {
   confidence: number;
 }
 
-// CAP-9: user-managed context tag.
+// CAP-9: user-managed context tag. `color` is a HEX #RRGGBB used for the card
+// badge and the review filter segment.
 export interface ContextTag {
   id: string;
   name: string;
+  color: string;
 }
 
 export interface EntryWithFoods {

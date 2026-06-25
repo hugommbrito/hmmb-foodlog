@@ -3,8 +3,10 @@ import { query } from '../db/client';
 import { ContextTag, User } from '../types/models';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const HEX_COLOR_RE = /^#[0-9a-f]{6}$/i;
 const MAX_TAG_LEN = 30;
 const DEFAULT_TAGS = ['casa', 'restaurante', 'trabalho', 'rua'];
+const DEFAULT_COLOR = '#9ca3af';
 const PG_UNIQUE_VIOLATION = '23505';
 
 // Minimal local copy of the Bearer-token auth used by the other route modules —
@@ -41,9 +43,19 @@ function validateName(raw: unknown): { name: string } | { error: string } {
   return { name };
 }
 
-async function listTags(userId: string): Promise<Pick<ContextTag, 'id' | 'name'>[]> {
-  return query<Pick<ContextTag, 'id' | 'name'>>(
-    'SELECT id, name FROM context_tags WHERE user_id = $1 ORDER BY name ASC',
+// Validates a HEX color #RRGGBB. Returns the normalized (lowercased) value or an error.
+function validateColor(raw: unknown): { color: string } | { error: string } {
+  if (typeof raw !== 'string' || !HEX_COLOR_RE.test(raw.trim())) {
+    return { error: 'Cor inválida (use #RRGGBB)' };
+  }
+  return { color: raw.trim().toLowerCase() };
+}
+
+type TagView = Pick<ContextTag, 'id' | 'name' | 'color'>;
+
+async function listTags(userId: string): Promise<TagView[]> {
+  return query<TagView>(
+    'SELECT id, name, color FROM context_tags WHERE user_id = $1 ORDER BY name ASC',
     [userId]
   );
 }
@@ -70,7 +82,7 @@ export async function tagsRoutes(app: FastifyInstance): Promise<void> {
     return reply.status(200).send(tags);
   });
 
-  app.post<{ Body: { name?: string } }>('/tags', async (request, reply) => {
+  app.post<{ Body: { name?: string; color?: string } }>('/tags', async (request, reply) => {
     const userId = await authenticate(request);
     if (!userId) {
       return reply.status(401).send({ error: 'Missing or invalid token' });
@@ -81,10 +93,20 @@ export async function tagsRoutes(app: FastifyInstance): Promise<void> {
       return reply.status(400).send({ error: result.error });
     }
 
+    // Color is optional on create — fall back to the neutral default. When present it must be valid.
+    let color = DEFAULT_COLOR;
+    if (request.body?.color !== undefined) {
+      const c = validateColor(request.body.color);
+      if ('error' in c) {
+        return reply.status(400).send({ error: c.error });
+      }
+      color = c.color;
+    }
+
     try {
-      const rows = await query<Pick<ContextTag, 'id' | 'name'>>(
-        'INSERT INTO context_tags (user_id, name) VALUES ($1, $2) RETURNING id, name',
-        [userId, result.name]
+      const rows = await query<TagView>(
+        'INSERT INTO context_tags (user_id, name, color) VALUES ($1, $2, $3) RETURNING id, name, color',
+        [userId, result.name, color]
       );
       return reply.status(201).send(rows[0]);
     } catch (err) {
@@ -96,7 +118,9 @@ export async function tagsRoutes(app: FastifyInstance): Promise<void> {
     }
   });
 
-  app.patch<{ Params: { id: string }; Body: { name?: string } }>('/tags/:id', async (request, reply) => {
+  // Update a tag's name and/or color. At least one field must be present; each is
+  // validated only when supplied (a color-only change leaves the name untouched).
+  app.patch<{ Params: { id: string }; Body: { name?: string; color?: string } }>('/tags/:id', async (request, reply) => {
     const userId = await authenticate(request);
     if (!userId) {
       return reply.status(401).send({ error: 'Missing or invalid token' });
@@ -105,15 +129,33 @@ export async function tagsRoutes(app: FastifyInstance): Promise<void> {
       return reply.status(404).send({ error: 'Tag not found' });
     }
 
-    const result = validateName(request.body?.name);
-    if ('error' in result) {
-      return reply.status(400).send({ error: result.error });
+    // Build the SET clause dynamically from the fields actually provided.
+    const sets: string[] = [];
+    const params: unknown[] = [request.params.id, userId];
+    if (request.body?.name !== undefined) {
+      const result = validateName(request.body.name);
+      if ('error' in result) {
+        return reply.status(400).send({ error: result.error });
+      }
+      params.push(result.name);
+      sets.push(`name = $${params.length}`);
+    }
+    if (request.body?.color !== undefined) {
+      const c = validateColor(request.body.color);
+      if ('error' in c) {
+        return reply.status(400).send({ error: c.error });
+      }
+      params.push(c.color);
+      sets.push(`color = $${params.length}`);
+    }
+    if (sets.length === 0) {
+      return reply.status(400).send({ error: 'Nada para atualizar (informe name e/ou color)' });
     }
 
     try {
-      const rows = await query<Pick<ContextTag, 'id' | 'name'>>(
-        'UPDATE context_tags SET name = $3 WHERE id = $1 AND user_id = $2 RETURNING id, name',
-        [request.params.id, userId, result.name]
+      const rows = await query<TagView>(
+        `UPDATE context_tags SET ${sets.join(', ')} WHERE id = $1 AND user_id = $2 RETURNING id, name, color`,
+        params
       );
       if (rows.length === 0) {
         return reply.status(404).send({ error: 'Tag not found' });

@@ -215,4 +215,36 @@ button.link.danger { color: var(--red); }
   padding: 10px 12px;
 }
 .tag-row .tag-name { flex: 1; font-weight: 500; }
-.tag-row input { flex: 1; min-width: 0; }
+.tag-row input[type='text'] { flex: 1; min-width: 0; }
+
+/* Listing order/tag features: colored badge, tag filter, sort toggle, color picker */
+.sort-toggle { white-space: nowrap; }
+
+/* Tag filter segment wraps when the user has many tags; each option shows a swatch. */
+.tag-filter { flex-wrap: wrap; }
+.tag-filter .seg-btn { display: inline-flex; align-items: center; gap: 6px; }
+.dot-color { width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex: none; }
+
+/* Card context: a single colored badge for the entry's tag; tapping opens the picker. */
+.context { margin-top: 12px; }
+.tag-badge {
+  border: 1px solid transparent;
+  padding: 4px 12px;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+.tag-badge.empty { background: none; border-color: var(--border); color: var(--muted); font-weight: 400; }
+.context .context-chips { margin-top: 8px; }
+
+/* Native color picker shown as a compact swatch in the Tags screen. */
+.color-swatch {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: none;
+  cursor: pointer;
+}
