@@ -105,3 +105,13 @@ As 5 chamadas a serviços externos agora gravam rows `direction='outbound'` em `
 - **Normalização de número de telefone**: validar/normalizar formato E.164 antes de lookup no banco (relevante se números puderem ser cadastrados em formatos diferentes).
 - **Zod validation no webhook body**: adicionar schema Zod no route para rejeitar payloads malformados mais cedo (baixa prioridade enquanto Z-API for a única fonte).
 - **POST /entries/photo síncrono segura conexão até ~50s** (introduzido em `spec-entry-analysis-ptbr-and-results`): o POST aguarda a análise da IA via `waitUntilFinished`. Sob proxy/load balancer com timeout de gateway abaixo disso, ou sob carga (cada captura em voo prende uma conexão HTTP + um consumidor Redis), pode haver gateway timeout / exaustão de conexões. Mitigações futuras: SSE/long-poll, webhook de conclusão, ou reduzir o timeout e depender mais do `GET /entries/:id`. Trade-off aceito conscientemente (modo síncrono escolhido pelo usuário).
+
+## Goal diferido — CAP-7b: análise de padrões por IA na view do nutricionista
+
+Separado conscientemente da CAP-7a (link + acesso sem login + calendário + lista) em 2026-06-25 (decisão de Hugo). A 3ª visualização exigida pelo SPEC CAP-7 ("análise de padrões por IA") foi diferida porque:
+
+- Introduz **nova dependência/custo**: novas chamadas ao Claude para sumarizar o período do link.
+- **Sobrepõe-se à CAP-6** (relatório semanal de padrões comportamentais) — candidata a ser implementada **junto/fundida** com a CAP-6, reusando o mesmo motor de detecção de padrões.
+- Não bloqueia o valor central do link (apresentar histórico ao nutricionista): calendário + lista já cobrem isso.
+
+**Quando retomar:** implementar a detecção de padrões (≥3 observações: horários recorrentes, variação de macros por tipo de dia, correlações contexto × escolha) uma vez só, e expô-la tanto no relatório semanal (CAP-6, web app autenticado) quanto na view pública do link (CAP-7b, read-only). Reusar a infra de share-link da CAP-7a (token, período, expiração).

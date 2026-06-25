@@ -1,4 +1,12 @@
-import type { ContextTag, EntryWithFoods, EntryAnalysisView, ReanalyzeRequest, RequestLog } from './types';
+import type {
+  ContextTag,
+  EntryWithFoods,
+  EntryAnalysisView,
+  ReanalyzeRequest,
+  RequestLog,
+  ShareLink,
+  SharedPayload,
+} from './types';
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:3000').replace(/\/$/, '');
 const TOKEN_KEY = 'foodlog_api_token';
@@ -110,6 +118,47 @@ export function setEntryContext(id: string, contextTagId: string | null): Promis
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ context_tag_id: contextTagId }),
   });
+}
+
+// CAP-7a — share links (owner, Bearer).
+export function createShareLink(input: {
+  period_start: string;
+  period_end: string;
+  expires_at: string;
+}): Promise<ShareLink> {
+  return request<ShareLink>('/share-links', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+}
+
+export function listShareLinks(): Promise<ShareLink[]> {
+  return request<ShareLink[]>('/share-links');
+}
+
+export function deleteShareLink(id: string): Promise<{ deleted: boolean }> {
+  return request<{ deleted: boolean }>(`/share-links/${id}`, { method: 'DELETE' });
+}
+
+// Distinct errors so the public view can tell "expired" from "invalid/revoked".
+export class ShareExpiredError extends Error {}
+export class ShareInvalidError extends Error {}
+
+// Public, tokenless read of a shared period. Does NOT send Authorization — the
+// endpoint is unauthenticated and the nutritionist has no token.
+export async function fetchShared(token: string): Promise<SharedPayload> {
+  const res = await fetch(`${API_BASE}/shared/${encodeURIComponent(token)}`);
+  if (res.status === 410) {
+    throw new ShareExpiredError('Link expirado');
+  }
+  if (res.status === 404) {
+    throw new ShareInvalidError('Link inválido');
+  }
+  if (!res.ok) {
+    throw new Error(`Erro ${res.status}`);
+  }
+  return res.json() as Promise<SharedPayload>;
 }
 
 // Audit module: list recent request logs, optionally filtered by a path

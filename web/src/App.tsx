@@ -2,13 +2,16 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   acceptEntry,
   clearToken,
+  createShareLink,
   createTag,
   deleteEntry,
+  deleteShareLink,
   deleteTag,
   fetchEntries,
   fetchRequestLogs,
   fetchTags,
   getToken,
+  listShareLinks,
   purgeRequestLogs,
   reanalyzeEntry,
   setEntryContext,
@@ -16,7 +19,14 @@ import {
   UnauthorizedError,
   updateTag,
 } from './api';
-import type { ContextTag, EntryWithFoods, FoodItem, ReanalyzeRequest, RequestLog } from './types';
+import type {
+  ContextTag,
+  EntryWithFoods,
+  FoodItem,
+  ReanalyzeRequest,
+  RequestLog,
+  ShareLink,
+} from './types';
 
 // YYYY-MM-DD for "today", pinned to the same timezone the backend filters on
 // (America/Sao_Paulo) so the default day matches regardless of the device tz.
@@ -25,7 +35,7 @@ function todayLocal(): string {
 }
 
 // Confidence thresholds from the data-model contract.
-function confClass(c: number | null): string {
+export function confClass(c: number | null): string {
   if (c === null) return 'conf-none';
   if (c === 0) return 'conf-zero';
   if (c >= 0.85) return 'conf-high';
@@ -33,7 +43,7 @@ function confClass(c: number | null): string {
   return 'conf-low';
 }
 
-function pct(c: number): string {
+export function pct(c: number): string {
   return `${Math.round(c * 100)}%`;
 }
 
@@ -42,7 +52,7 @@ function pct(c: number): string {
 // null across every food is omitted (not shown as "0", which would imply data the
 // AI never computed); non-finite values are ignored. Returns null when there is
 // nothing to show so the row can be skipped — mirrors FoodRow's macro rendering.
-function mealTotals(foods: FoodItem[]): string | null {
+export function mealTotals(foods: FoodItem[]): string | null {
   if (foods.length === 0) return null;
   const sum = (k: 'kcal' | 'protein_g' | 'fat_g' | 'carbs_g'): number | null => {
     const vals = foods
@@ -84,7 +94,7 @@ function textOn(hex: string): string {
   return lum > 0.6 ? '#111' : '#fff';
 }
 
-type Tab = 'review' | 'tags' | 'audit';
+type Tab = 'review' | 'tags' | 'share' | 'audit';
 
 // Tag filter selection: a specific tag id, or the two synthetic options.
 type TagFilter = 'all' | 'none' | string;
@@ -118,6 +128,12 @@ function Shell({ onLogout }: { onLogout: () => void }) {
           Tags
         </button>
         <button
+          className={tab === 'share' ? 'tab active' : 'tab'}
+          onClick={() => setTab('share')}
+        >
+          Compartilhar
+        </button>
+        <button
           className={tab === 'audit' ? 'tab active' : 'tab'}
           onClick={() => setTab('audit')}
         >
@@ -126,6 +142,7 @@ function Shell({ onLogout }: { onLogout: () => void }) {
       </nav>
       {tab === 'review' && <Review onLogout={onLogout} />}
       {tab === 'tags' && <TagsManager onLogout={onLogout} />}
+      {tab === 'share' && <ShareManager onLogout={onLogout} />}
       {tab === 'audit' && <Audit onLogout={onLogout} />}
     </div>
   );
@@ -624,7 +641,7 @@ function EntryCard({
   );
 }
 
-function FoodRow({ food }: { food: FoodItem }) {
+export function FoodRow({ food }: { food: FoodItem }) {
   const macros = [
     food.kcal != null ? `${Math.round(food.kcal)} kcal` : null,
     food.protein_g != null ? `P ${Math.round(food.protein_g)}g` : null,
@@ -840,6 +857,192 @@ function TagsManager({ onLogout }: { onLogout: () => void }) {
                 </button>
               </>
             )}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+// CAP-7a — share links: generate a read-only link for the nutritionist over a
+// chosen period with an expiration, then copy/revoke existing links.
+type Validity = '7' | '30' | '90' | 'custom';
+
+function shareUrl(token: number): string {
+  // Friendly zero-padded display (e.g. /share/001); the backend lookup parses the int.
+  return `${window.location.origin}/share/${String(token).padStart(3, '0')}`;
+}
+
+function fmtDate(d: string): string {
+  // d is 'YYYY-MM-DD'; render without constructing a Date (avoids tz off-by-one).
+  const [y, m, day] = d.split('-');
+  return `${day}/${m}/${y}`;
+}
+
+function ShareManager({ onLogout }: { onLogout: () => void }) {
+  const [links, setLinks] = useState<ShareLink[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState<string | null>(null);
+
+  const [start, setStart] = useState<string>(todayLocal());
+  const [end, setEnd] = useState<string>(todayLocal());
+  const [validity, setValidity] = useState<Validity>('30');
+  const [customExpires, setCustomExpires] = useState<string>('');
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      setLinks(await listShareLinks());
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        onLogout();
+        return;
+      }
+      setError((err as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }, [onLogout]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const handleGenerate = async () => {
+    if (start > end) {
+      setError('A data inicial deve ser anterior ou igual à final.');
+      return;
+    }
+    // Compute the absolute expiration: presets are N days from now; custom is a local
+    // datetime the user picked. Both go to the backend as ISO.
+    let expires_at: string;
+    if (validity === 'custom') {
+      if (!customExpires) {
+        setError('Escolha a data/hora de expiração.');
+        return;
+      }
+      const d = new Date(customExpires);
+      if (Number.isNaN(d.getTime()) || d.getTime() <= Date.now()) {
+        setError('A expiração deve ser no futuro.');
+        return;
+      }
+      expires_at = d.toISOString();
+    } else {
+      const d = new Date();
+      d.setDate(d.getDate() + Number(validity));
+      expires_at = d.toISOString();
+    }
+
+    setBusy(true);
+    setError(null);
+    try {
+      await createShareLink({ period_start: start, period_end: end, expires_at });
+      await load();
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        onLogout();
+        return;
+      }
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleCopy = async (token: number) => {
+    const url = shareUrl(token);
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(url);
+      setTimeout(() => setCopied((c) => (c === url ? null : c)), 2000);
+    } catch {
+      // Clipboard blocked (insecure context / permissions): show the URL to copy by hand.
+      window.prompt('Copie o link:', url);
+    }
+  };
+
+  const handleRevoke = async (link: ShareLink) => {
+    if (!window.confirm('Revogar este link? Quem tiver a URL perde o acesso.')) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await deleteShareLink(link.id);
+      setLinks((prev) => prev.filter((l) => l.id !== link.id));
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        onLogout();
+        return;
+      }
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="review">
+      <header>
+        <div className="header-row">
+          <h1>Compartilhar com o nutricionista</h1>
+          <button className="link" onClick={onLogout}>Sair</button>
+        </div>
+        <div className="share-form">
+          <label>
+            De
+            <input type="date" value={start} onChange={(e) => e.target.value && setStart(e.target.value)} disabled={busy} />
+          </label>
+          <label>
+            Até
+            <input type="date" value={end} onChange={(e) => e.target.value && setEnd(e.target.value)} disabled={busy} />
+          </label>
+          <label>
+            Validade
+            <select value={validity} onChange={(e) => setValidity(e.target.value as Validity)} disabled={busy}>
+              <option value="7">7 dias</option>
+              <option value="30">30 dias</option>
+              <option value="90">90 dias</option>
+              <option value="custom">Personalizada…</option>
+            </select>
+          </label>
+          {validity === 'custom' && (
+            <input
+              type="datetime-local"
+              value={customExpires}
+              onChange={(e) => setCustomExpires(e.target.value)}
+              disabled={busy}
+            />
+          )}
+          <button type="button" onClick={() => void handleGenerate()} disabled={busy}>
+            {busy ? 'Gerando…' : 'Gerar link'}
+          </button>
+        </div>
+      </header>
+
+      {error && <div className="banner error">{error}</div>}
+      {loading && <div className="banner">Carregando…</div>}
+      {!loading && !error && links.length === 0 && <div className="empty">Nenhum link gerado.</div>}
+
+      <ul className="link-list">
+        {links.map((l) => (
+          <li key={l.id} className={`link-row ${l.status === 'expired' ? 'expired' : ''}`}>
+            <div className="link-main">
+              <code className="link-url">{shareUrl(l.token)}</code>
+              <span className="link-meta">
+                {fmtDate(l.period_start)}–{fmtDate(l.period_end)} · {l.status === 'expired' ? 'expirado' : 'ativo'} ·
+                expira {new Date(l.expires_at).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
+              </span>
+            </div>
+            <div className="link-actions">
+              <button className="link" onClick={() => void handleCopy(l.token)} disabled={busy}>
+                {copied === shareUrl(l.token) ? 'Copiado!' : 'Copiar'}
+              </button>
+              <button className="link danger" onClick={() => void handleRevoke(l)} disabled={busy}>Revogar</button>
+            </div>
           </li>
         ))}
       </ul>

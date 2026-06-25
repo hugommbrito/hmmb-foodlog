@@ -6,6 +6,7 @@ import { healthRoutes } from './routes/health';
 import { webhookRoutes } from './routes/webhook';
 import { entriesRoutes } from './routes/entries';
 import { tagsRoutes } from './routes/tags';
+import { shareRoutes } from './routes/share';
 import { auditRoutes } from './routes/audit';
 import { registerAuditHooks } from './plugins/audit';
 
@@ -39,6 +40,7 @@ export function buildApp() {
   app.register(webhookRoutes);
   app.register(entriesRoutes);
   app.register(tagsRoutes);
+  app.register(shareRoutes);
   app.register(auditRoutes);
 
   return app;

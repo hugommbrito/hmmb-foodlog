@@ -57,6 +57,36 @@ export interface EntryAnalysisView {
   foods: FoodItem[];
 }
 
+// CAP-7a: a shareable read-only link. `token` is the friendly sequential share_no
+// used in the public URL. `status` is computed server-side from expires_at.
+export interface ShareLink {
+  id: string;
+  token: number;
+  period_start: string; // 'YYYY-MM-DD'
+  period_end: string;
+  expires_at: string; // ISO
+  created_at: string; // ISO
+  status: 'active' | 'expired';
+}
+
+// Public read-only entry exposed through a share link (no user_id/PII).
+export interface SharedEntry {
+  id: string;
+  created_at: string;
+  photos: string[];
+  title: string | null;
+  context: string | null;
+  foods: FoodItem[];
+}
+
+// Payload of the public GET /shared/:token.
+export interface SharedPayload {
+  period_start: string;
+  period_end: string;
+  expires_at: string;
+  entries: SharedEntry[];
+}
+
 // Mirrors the backend `RequestLog` (src/types/models.ts). One persisted request
 // log; direction is 'inbound' or 'outbound'. created_at arrives as an ISO string.
 export interface RequestLog {

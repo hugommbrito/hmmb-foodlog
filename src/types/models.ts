@@ -16,6 +16,29 @@ export interface ContextTag {
   created_at: Date;
 }
 
+// CAP-7a: a shareable read-only link to the nutritionist. `share_no` is the
+// friendly sequential token used in the public URL (/share/:share_no).
+export interface ShareLink {
+  id: string;
+  share_no: number;
+  user_id: string;
+  period_start: string; // 'YYYY-MM-DD'
+  period_end: string; // 'YYYY-MM-DD'
+  expires_at: Date;
+  created_at: Date;
+}
+
+// Public, read-only view of an entry exposed through a share link. Deliberately
+// excludes user_id and any PII — only what the nutritionist needs to see.
+export interface SharedEntry {
+  id: string;
+  created_at: Date;
+  photos: string[];
+  title: string | null;
+  context: string | null; // resolved tag name
+  foods: FoodItem[];
+}
+
 export interface PhotoCaptureResponse {
   entry_id: string;
   analysis_status: AnalysisStatus;
