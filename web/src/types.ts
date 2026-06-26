@@ -108,6 +108,13 @@ export interface PatternsPayload {
   insufficient?: boolean;
 }
 
+// CAP-6b: optional query params for GET /report/weekly.
+export interface ReportQueryParams {
+  start_date?: string;
+  end_date?: string;
+  force?: boolean;
+}
+
 // CAP-6: payload of GET /report/weekly (authenticated). Either the analysis
 // (with period and generated_at) or `insufficient` when there's too little data.
 export type WeeklyReportPayload =

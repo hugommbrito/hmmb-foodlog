@@ -4,6 +4,7 @@ import type {
   EntryAnalysisView,
   PatternsPayload,
   ReanalyzeRequest,
+  ReportQueryParams,
   RequestLog,
   ShareLink,
   SharedPayload,
@@ -230,10 +231,15 @@ export function purgeRequestLogs(before?: string): Promise<{ deleted: number }> 
   return request<{ deleted: number }>(`/audit/requests${q}`, { method: 'DELETE' });
 }
 
-// CAP-6: authenticated weekly behavioral-pattern report.
-// Lazy + cached: the backend generates once per day (SP timezone) and caches the
-// result in `weekly_reports`. 401 → UnauthorizedError (same as other authed calls);
-// 502 → throws a generic Error with the server message (UI offers retry).
-export function fetchWeeklyReport(): Promise<WeeklyReportPayload> {
-  return request<WeeklyReportPayload>('/report/weekly');
+// CAP-6 / CAP-6b: authenticated behavioral-pattern report.
+// Optional params: start_date + end_date (YYYY-MM-DD) for a custom range;
+// force=true bypasses the daily cache and always re-generates via AI.
+// Without params: defaults to the rolling 7-day window.
+export function fetchWeeklyReport(params?: ReportQueryParams): Promise<WeeklyReportPayload> {
+  const p = new URLSearchParams();
+  if (params?.start_date) p.set('start_date', params.start_date);
+  if (params?.end_date) p.set('end_date', params.end_date);
+  if (params?.force) p.set('force', 'true');
+  const qs = p.toString();
+  return request<WeeklyReportPayload>(`/report/weekly${qs ? `?${qs}` : ''}`);
 }

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   acceptEntry,
   clearToken,
@@ -27,6 +27,7 @@ import type {
   EntryWithFoods,
   FoodItem,
   ReanalyzeRequest,
+  ReportQueryParams,
   RequestLog,
   ShareLink,
   WeeklyReportPayload,
@@ -940,20 +941,43 @@ function SearchEntryCard(props: Parameters<typeof EntryCard>[0]) {
 //   error    — network/AI failure; user can retry
 //   ok       — analysis ready (period + observations)
 type WeeklyReportStatus = 'idle' | 'loading' | 'insufficient' | 'error' | 'ok';
+type ReportPreset = 7 | 14 | 30 | 'custom';
+
+// Returns YYYY-MM-DD for `n` days before `base` (ISO date string).
+function addDays(base: string, n: number): string {
+  const d = new Date(`${base}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+
+// Compute start_date / end_date for a given preset.
+// preset=7 returns empty (server computes 7d rolling window, original CAP-6 behavior).
+function presetToDates(
+  preset: ReportPreset,
+  customStart: string,
+  customEnd: string,
+): Pick<ReportQueryParams, 'start_date' | 'end_date'> {
+  if (preset === 7) return {};
+  if (preset === 'custom') return { start_date: customStart, end_date: customEnd };
+  const today = todayLocal();
+  return { start_date: addDays(today, -(preset - 1)), end_date: today };
+}
 
 function WeeklyReportView({ onLogout }: { onLogout: () => void }) {
   type ReportData = Extract<WeeklyReportPayload, { generated_at: string }>;
   const [status, setStatus] = useState<WeeklyReportStatus>('idle');
   const [data, setData] = useState<ReportData | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  // Dedupe guard: same pattern as PatternsView in Share.tsx.
-  const requested = useRef(false);
+  const [preset, setPreset] = useState<ReportPreset>(7);
+  const today = todayLocal();
+  const [customStart, setCustomStart] = useState<string>(addDays(today, -6));
+  const [customEnd, setCustomEnd] = useState<string>(today);
 
-  const load = () => {
-    requested.current = true;
+  function doLoad(params: ReportQueryParams) {
     setStatus('loading');
+    setData(null);
     setErrorMsg(null);
-    fetchWeeklyReport()
+    fetchWeeklyReport(params)
       .then((payload) => {
         if ('insufficient' in payload && payload.insufficient) {
           setStatus('insufficient');
@@ -963,24 +987,33 @@ function WeeklyReportView({ onLogout }: { onLogout: () => void }) {
         }
       })
       .catch((err) => {
-        if (err instanceof UnauthorizedError) {
-          onLogout();
-          return;
-        }
+        if (err instanceof UnauthorizedError) { onLogout(); return; }
         setErrorMsg((err as Error).message);
         setStatus('error');
       });
-  };
+  }
 
-  // Load once when the component mounts (the tab is opened for the first time).
+  // Re-fetch whenever preset changes (skip 'custom' — wait for user to click Aplicar).
   useEffect(() => {
-    if (!requested.current) {
-      load();
+    if (preset !== 'custom') {
+      doLoad(presetToDates(preset, customStart, customEnd));
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [preset]);
+
+  function handleAplicar() {
+    if (!customStart || !customEnd) return;
+    doLoad({ start_date: customStart, end_date: customEnd });
+  }
+
+  function handleRegenerar() {
+    if (preset === 'custom' && (!customStart || !customEnd)) return;
+    const dates = presetToDates(preset, customStart, customEnd);
+    doLoad({ ...dates, force: true });
+  }
 
   const reportData = status === 'ok' ? data : null;
+  const busy = status === 'loading';
 
   function fmtDate(d: string): string {
     const [, m, day] = d.split('-');
@@ -999,18 +1032,70 @@ function WeeklyReportView({ onLogout }: { onLogout: () => void }) {
     <div className="review">
       <header>
         <div className="header-row">
-          <h1>Relatório semanal</h1>
+          <h1>Relatório de padrões</h1>
           <button className="link" onClick={onLogout}>Sair</button>
         </div>
       </header>
 
-      {status === 'loading' && (
+      <div className="seg" style={{ margin: '12px 16px 0' }}>
+        {([7, 14, 30] as const).map((d) => (
+          <button
+            key={d}
+            type="button"
+            className={`seg-btn${preset === d ? ' active' : ''}`}
+            onClick={() => setPreset(d)}
+            disabled={busy}
+          >
+            {d}d
+          </button>
+        ))}
+        <button
+          type="button"
+          className={`seg-btn${preset === 'custom' ? ' active' : ''}`}
+          onClick={() => setPreset('custom')}
+          disabled={busy}
+        >
+          Personalizado
+        </button>
+      </div>
+
+      {preset === 'custom' && (
+        <div className="report-custom-dates">
+          <input
+            type="date"
+            value={customStart}
+            max={customEnd || today}
+            onChange={(e) => setCustomStart(e.target.value)}
+          />
+          <span>–</span>
+          <input
+            type="date"
+            value={customEnd}
+            min={customStart}
+            max={today}
+            onChange={(e) => setCustomEnd(e.target.value)}
+          />
+          <button
+            type="button"
+            className="seg-btn"
+            onClick={handleAplicar}
+            disabled={!customStart || !customEnd || busy}
+          >
+            Aplicar
+          </button>
+        </div>
+      )}
+
+      {busy && (
         <div className="banner">Analisando padrões com IA…</div>
       )}
 
       {status === 'insufficient' && (
         <div className="empty">
-          Dados insuficientes para gerar relatório (mínimo 3 dias de registro nos últimos 7 dias).
+          <p>Dados insuficientes (mínimo 3 dias de registro no período selecionado).</p>
+          <button type="button" className="seg-btn" onClick={handleRegenerar}>
+            Regenerar
+          </button>
         </div>
       )}
 
@@ -1020,10 +1105,7 @@ function WeeklyReportView({ onLogout }: { onLogout: () => void }) {
           <button
             type="button"
             className="seg-btn"
-            onClick={() => {
-              requested.current = false;
-              load();
-            }}
+            onClick={() => doLoad(presetToDates(preset, customStart, customEnd))}
           >
             Tentar novamente
           </button>
@@ -1034,9 +1116,14 @@ function WeeklyReportView({ onLogout }: { onLogout: () => void }) {
         <div className="patterns">
           <div className="weekly-report-header">
             <span className="weekly-report-period">
-              Últimos 7 dias: {fmtDate(reportData.period_start)} – {fmtDate(reportData.period_end)}
+              {fmtDate(reportData.period_start)} – {fmtDate(reportData.period_end)}
             </span>
-            <span className="patterns-meta">gerado às {fmtTime(reportData.generated_at)}</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+              <span className="patterns-meta">gerado às {fmtTime(reportData.generated_at)}</span>
+              <button type="button" className="seg-btn" onClick={handleRegenerar}>
+                Regenerar
+              </button>
+            </div>
           </div>
           {reportData.analysis.summary && (
             <p className="patterns-summary">{reportData.analysis.summary}</p>
@@ -1050,7 +1137,7 @@ function WeeklyReportView({ onLogout }: { onLogout: () => void }) {
               </li>
             ))}
           </ul>
-          <p className="patterns-meta">Análise gerada por IA a partir dos seus registros da semana.</p>
+          <p className="patterns-meta">Análise gerada por IA a partir dos seus registros.</p>
         </div>
       )}
     </div>

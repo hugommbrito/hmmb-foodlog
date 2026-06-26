@@ -1,7 +1,7 @@
 import { FastifyInstance, FastifyRequest } from 'fastify';
 import { query } from '../db/client';
 import { analyzePatterns } from '../services/ai';
-import { EntryQueryRow, PatternEntryInput, User, WeeklyReportRow } from '../types/models';
+import { EntryQueryRow, PatternEntryInput, ReportQuery, User, WeeklyReportRow } from '../types/models';
 
 // Minimal local copy of Bearer-token auth (same convention as routes/entries.ts).
 async function authenticate(request: FastifyRequest): Promise<string | null> {
@@ -28,44 +28,75 @@ function toSPDateStr(d: Date): string {
 }
 
 export async function reportRoutes(app: FastifyInstance): Promise<void> {
-  // CAP-6: authenticated weekly behavioral-pattern report.
-  // Lazy + cached: generated on first access of the day (SP timezone) and served
-  // from the `weekly_reports` cache on subsequent accesses.
-  app.get('/report/weekly', async (request, reply) => {
+  // CAP-6 / CAP-6b: authenticated behavioral-pattern report with flexible period.
+  // Optional query params: start_date + end_date (YYYY-MM-DD, must be paired);
+  // force=true bypasses the daily cache and always re-generates via AI.
+  // Without params: defaults to the rolling 7-day window (original CAP-6 behavior).
+  app.get<{ Querystring: ReportQuery }>('/report/weekly', async (request, reply) => {
     const userId = await authenticate(request);
     if (!userId) {
       return reply.status(401).send({ error: 'Não autorizado' });
     }
 
-    // --- Compute the SP rolling window ---
-    // period_end  = today in SP
-    // period_start = today - 6 days  (7 days inclusive)
-    const cacheRows = await query<WeeklyReportRow>(
-      `SELECT user_id,
-         to_char(period_start, 'YYYY-MM-DD') AS period_start,
-         to_char(period_end,   'YYYY-MM-DD') AS period_end,
-         analysis_json,
-         generated_at
-       FROM weekly_reports WHERE user_id = $1`,
-      [userId]
-    );
+    const { start_date, end_date, force } = request.query;
 
-    if (cacheRows.length > 0) {
-      const cached = cacheRows[0];
-      // Cache is valid when:
-      //   period_end = (now() AT TIME ZONE 'America/Sao_Paulo')::date
-      //   AND generated_at >= date_trunc('day', now() AT TIME ZONE 'America/Sao_Paulo')
-      //                       AT TIME ZONE 'America/Sao_Paulo'
-      // We perform this check in SQL to keep timezone arithmetic server-authoritative.
-      const validRows = await query<{ valid: boolean }>(
-        `SELECT (
-           $1::date = (now() AT TIME ZONE 'America/Sao_Paulo')::date
-           AND $2::timestamptz >= date_trunc('day', now() AT TIME ZONE 'America/Sao_Paulo')
-                                  AT TIME ZONE 'America/Sao_Paulo'
-         ) AS valid`,
-        [cached.period_end, cached.generated_at]
+    // Validate: both or neither; YYYY-MM-DD format; end >= start.
+    const dateRe = /^\d{4}-\d{2}-\d{2}$/;
+    const hasStart = Boolean(start_date?.trim());
+    const hasEnd = Boolean(end_date?.trim());
+    if (hasStart !== hasEnd) {
+      return reply.status(400).send({ error: 'start_date e end_date devem ser fornecidos juntos' });
+    }
+    if (hasStart && !dateRe.test(start_date!)) {
+      return reply.status(400).send({ error: 'start_date deve estar no formato YYYY-MM-DD' });
+    }
+    if (hasEnd && !dateRe.test(end_date!)) {
+      return reply.status(400).send({ error: 'end_date deve estar no formato YYYY-MM-DD' });
+    }
+    if (hasStart && hasEnd && start_date! > end_date!) {
+      return reply.status(400).send({ error: 'end_date deve ser >= start_date' });
+    }
+
+    const forceRefresh = force === 'true';
+
+    // --- Resolve period ---
+    let periodStart: string;
+    let periodEnd: string;
+
+    if (hasStart && hasEnd) {
+      periodStart = start_date!;
+      periodEnd = end_date!;
+    } else {
+      // Server-computed rolling 7d window in SP timezone (original CAP-6 behavior).
+      const windowRows = await query<{ period_start: string; period_end: string }>(
+        `SELECT
+           to_char((now() AT TIME ZONE 'America/Sao_Paulo')::date - INTERVAL '6 days', 'YYYY-MM-DD') AS period_start,
+           to_char((now() AT TIME ZONE 'America/Sao_Paulo')::date,                     'YYYY-MM-DD') AS period_end`,
+        []
       );
-      if (validRows[0]?.valid) {
+      periodStart = windowRows[0].period_start;
+      periodEnd = windowRows[0].period_end;
+    }
+
+    // --- Cache lookup (skipped when force=true) ---
+    if (!forceRefresh) {
+      const cacheRows = await query<WeeklyReportRow>(
+        `SELECT user_id,
+           to_char(period_start, 'YYYY-MM-DD') AS period_start,
+           to_char(period_end,   'YYYY-MM-DD') AS period_end,
+           analysis_json,
+           generated_at
+         FROM weekly_reports
+         WHERE user_id    = $1
+           AND period_start = $2::date
+           AND period_end   = $3::date
+           AND generated_at >= (date_trunc('day', now() AT TIME ZONE 'America/Sao_Paulo')
+                                AT TIME ZONE 'America/Sao_Paulo')`,
+        [userId, periodStart, periodEnd]
+      );
+
+      if (cacheRows.length > 0) {
+        const cached = cacheRows[0];
         return reply.status(200).send({
           generated_at: cached.generated_at.toISOString(),
           period_start: cached.period_start,
@@ -75,16 +106,7 @@ export async function reportRoutes(app: FastifyInstance): Promise<void> {
       }
     }
 
-    // --- Compute dynamic 7-day window in SP ---
-    const windowRows = await query<{ period_start: string; period_end: string }>(
-      `SELECT
-         to_char((now() AT TIME ZONE 'America/Sao_Paulo')::date - INTERVAL '6 days', 'YYYY-MM-DD') AS period_start,
-         to_char((now() AT TIME ZONE 'America/Sao_Paulo')::date,                     'YYYY-MM-DD') AS period_end`,
-      []
-    );
-    const { period_start, period_end } = windowRows[0];
-
-    // --- Load entries for the window ---
+    // --- Load entries for the period ---
     const rawEntries = await query<EntryQueryRow>(
       `SELECT e.created_at,
               ct.name AS context,
@@ -104,10 +126,10 @@ export async function reportRoutes(app: FastifyInstance): Promise<void> {
          AND (e.created_at AT TIME ZONE 'America/Sao_Paulo')::date BETWEEN $2::date AND $3::date
        GROUP BY e.id, e.created_at, ct.name
        ORDER BY e.created_at ASC`,
-      [userId, period_start, period_end]
+      [userId, periodStart, periodEnd]
     );
 
-    // --- Sufficiency guard: need entries in ≥ 3 distinct local SP days ---
+    // --- Sufficiency guard: need entries in ≥3 distinct local SP days ---
     const distinctDays = new Set(rawEntries.map((e) => toSPDateStr(e.created_at)));
     if (distinctDays.size < 3) {
       return reply.status(200).send({ insufficient: true });
@@ -118,9 +140,8 @@ export async function reportRoutes(app: FastifyInstance): Promise<void> {
       created_at: row.created_at,
       context: row.context,
       foods: row.foods.map((f) => ({
-        // FoodItem shape used by analyzePatterns via formatEntryLine
-        id: '',              // not used by analyzePatterns
-        entry_id: '',        // not used by analyzePatterns
+        id: '',
+        entry_id: '',
         description: f.description,
         quantity: f.quantity_g ?? null,
         kcal: f.kcal,
@@ -136,27 +157,25 @@ export async function reportRoutes(app: FastifyInstance): Promise<void> {
     try {
       analysis = await analyzePatterns(entries);
     } catch (err) {
-      app.log.error({ err: (err as Error).message }, '[report] weekly pattern analysis failed');
+      app.log.error(err, '[report] pattern analysis failed');
       return reply.status(502).send({ error: 'Não foi possível gerar o relatório' });
     }
 
-    // --- Upsert cache ---
+    // --- Upsert cache (conflict on the composite key user_id + period) ---
     const upsertResult = await query<{ generated_at: Date }>(
       `INSERT INTO weekly_reports (user_id, period_start, period_end, analysis_json)
        VALUES ($1, $2, $3, $4::jsonb)
-       ON CONFLICT (user_id) DO UPDATE
-         SET period_start  = EXCLUDED.period_start,
-             period_end    = EXCLUDED.period_end,
-             analysis_json = EXCLUDED.analysis_json,
+       ON CONFLICT (user_id, period_start, period_end) DO UPDATE
+         SET analysis_json = EXCLUDED.analysis_json,
              generated_at  = now()
        RETURNING generated_at`,
-      [userId, period_start, period_end, JSON.stringify(analysis)]
+      [userId, periodStart, periodEnd, JSON.stringify(analysis)]
     );
 
     return reply.status(200).send({
       generated_at: upsertResult[0].generated_at.toISOString(),
-      period_start,
-      period_end,
+      period_start: periodStart,
+      period_end: periodEnd,
       analysis,
     });
   });

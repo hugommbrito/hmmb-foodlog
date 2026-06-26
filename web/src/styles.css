@@ -379,6 +379,23 @@ button.link.danger { color: var(--red); }
 }
 .weekly-report-period { font-weight: 600; font-size: 0.95rem; }
 
+/* CAP-6b: custom date range inputs */
+.report-custom-dates {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 8px 16px 0;
+}
+.report-custom-dates input[type="date"] {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px 8px;
+  font-size: 0.85rem;
+  background: var(--card);
+  color: var(--text);
+}
+
 /* Manual entry (text → AI segregation) */
 .new-entry { padding: 6px 12px; font-size: 0.9rem; white-space: nowrap; }
 .manual-form {

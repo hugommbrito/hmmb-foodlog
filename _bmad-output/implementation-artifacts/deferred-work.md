@@ -44,8 +44,15 @@ Aceitas conscientemente para uso pessoal single-user; revisar se virar multiusu�
 
 Aceitas conscientemente para uso pessoal single-user.
 
-- **Formato de log do erro de `analyzePatterns`**: `app.log.error({ err: (err as Error).message }, ...)` em `src/routes/report.ts` serializa o erro como string em vez de objeto completo, perdendo stack e causa. Trocar para `app.log.error(err, '[report] ...')` para melhor diagnóstico em produção.
+- **Formato de log do erro de `analyzePatterns`**: já corrigido em CAP-6b (`app.log.error(err, ...)` no `src/routes/report.ts`).
 - **Race condition no cache miss**: dois `GET /report/weekly` simultâneos para o mesmo usuário no mesmo momento do dia ambos passam pelo cache-miss, chamam `analyzePatterns` em paralelo e fazem UPSERT (last-writer-wins). Mesma classe de concorrência já diferida em CAP-4/5/7b; aceitável para uso pessoal single-user. Mitigação futura: advisory lock por `user_id` no Postgres ou mutex em memória (single-process).
+
+## Melhorias técnicas diferidas — CAP-6b relatório flexível (encontradas na revisão)
+
+Aceitas conscientemente para uso pessoal single-user.
+
+- **Rate limit em `force=true`**: qualquer chamada autenticada a `GET /report/weekly?force=true` re-invoca a IA, ignorando o cache. Não há cooldown ou cota. Risco de custo amplificado se o endpoint ficar exposto a múltiplos usuários. Mitigação futura: rate limit por `user_id` (ex.: 1 forced re-gen / hora) ou custo-cap no provider.
+- **Cache midnight thundering herd**: o cache invalida à meia-noite no fuso de São Paulo — todos os usuários que acessarem o relatório logo após a virada de dia re-geram em paralelo. Irrelevante para uso pessoal single-user; mitigar com jitter de expiração se for multiusuário.
 
 ## Melhoria técnica diferida — runner de migration não-transacional (pré-existente)
 

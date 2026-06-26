@@ -200,6 +200,14 @@ export interface WebhookPayload {
   text?: { message?: string } | null;
 }
 
+// CAP-6b: query params for GET /report/weekly. Fastify parses all query
+// params as strings by default (no JSON schema), so `force` is a string.
+export interface ReportQuery {
+  start_date?: string;
+  end_date?: string;
+  force?: string;
+}
+
 // CAP-6: intermediate DB-result type for the entries query in report.ts.
 // `foods` is a JSON array already deserialized by pg from the json_agg result.
 export interface EntryQueryRow {
