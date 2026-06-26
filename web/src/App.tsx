@@ -72,23 +72,27 @@ export function pct(c: number): string {
   return `${Math.round(c * 100)}%`;
 }
 
-// Meal totals from the AI-identified foods. Weight is intentionally omitted:
-// `quantity` is free text (e.g. "1 prato"), not a numeric field. A macro that is
-// null across every food is omitted (not shown as "0", which would imply data the
-// AI never computed); non-finite values are ignored. Returns null when there is
-// nothing to show so the row can be skipped — mirrors FoodRow's macro rendering.
-export function mealTotals(foods: FoodItem[]): string | null {
-  if (foods.length === 0) return null;
-  const sum = (k: 'kcal' | 'protein_g' | 'fat_g' | 'carbs_g'): number | null => {
-    const vals = foods
-      .map((f) => f[k])
-      .filter((v): v is number => v != null && Number.isFinite(v));
-    return vals.length > 0 ? vals.reduce((a, v) => a + v, 0) : null;
-  };
-  const kcal = sum('kcal');
-  const protein = sum('protein_g');
-  const fat = sum('fat_g');
-  const carbs = sum('carbs_g');
+// Sum one macro across foods. A macro that is null across every food returns null
+// (not 0 — that would imply data the AI never computed); non-finite values are
+// ignored. Shared by mealTotals (per-card) and dayTotals (page summary) so the
+// null≠0 rule never diverges between the two.
+function sumMacros(
+  foods: FoodItem[],
+  k: 'kcal' | 'protein_g' | 'fat_g' | 'carbs_g'
+): number | null {
+  const vals = foods
+    .map((f) => f[k])
+    .filter((v): v is number => v != null && Number.isFinite(v));
+  return vals.length > 0 ? vals.reduce((a, v) => a + v, 0) : null;
+}
+
+// Format the four macros into the canonical "N kcal · P Xg · G Yg · C Zg" string,
+// omitting any macro that is null. Returns null when nothing is showable.
+function formatMacros(foods: FoodItem[]): string | null {
+  const kcal = sumMacros(foods, 'kcal');
+  const protein = sumMacros(foods, 'protein_g');
+  const fat = sumMacros(foods, 'fat_g');
+  const carbs = sumMacros(foods, 'carbs_g');
   const parts = [
     kcal != null ? `${Math.round(kcal)} kcal` : null,
     protein != null ? `P ${Math.round(protein)}g` : null,
@@ -96,6 +100,22 @@ export function mealTotals(foods: FoodItem[]): string | null {
     carbs != null ? `C ${Math.round(carbs)}g` : null,
   ].filter(Boolean);
   return parts.length > 0 ? parts.join(' · ') : null;
+}
+
+// Meal totals from the AI-identified foods. Weight is intentionally omitted:
+// `quantity` is free text (e.g. "1 prato"), not a numeric field. Returns null when
+// there is nothing to show so the row can be skipped — mirrors FoodRow's macros.
+export function mealTotals(foods: FoodItem[]): string | null {
+  if (foods.length === 0) return null;
+  return formatMacros(foods);
+}
+
+// Day summary: aggregate macros across every visible entry's foods, using the same
+// null≠0 rule as the per-card totals. Returns null when there is nothing to show.
+export function dayTotals(entries: EntryWithFoods[]): string | null {
+  const foods = entries.flatMap((e) => e.foods);
+  if (foods.length === 0) return null;
+  return formatMacros(foods);
 }
 
 type SortDir = 'desc' | 'asc';
@@ -360,6 +380,10 @@ function Review({ onLogout }: { onLogout: () => void }) {
     return sortByCreated(filtered, sortDir);
   }, [entries, tagFilter, sortDir]);
 
+  // Day summary reflects the active tag filter: it aggregates the visible entries,
+  // not all of them. Null when nothing showable so the bar can be skipped.
+  const summary = useMemo(() => dayTotals(visible), [visible]);
+
   return (
     <div className="review">
       <header>
@@ -435,6 +459,15 @@ function Review({ onLogout }: { onLogout: () => void }) {
       )}
       {!loading && !error && entries.length > 0 && visible.length === 0 && (
         <div className="empty">Nenhuma entrada para este filtro.</div>
+      )}
+
+      {!loading && !error && visible.length > 0 && (
+        <div className="day-summary">
+          <span className="day-summary-count">
+            {visible.length} {visible.length === 1 ? 'entrada' : 'entradas'}
+          </span>
+          {summary && <span className="day-summary-totals">{summary}</span>}
+        </div>
       )}
 
       <ul className="cards">

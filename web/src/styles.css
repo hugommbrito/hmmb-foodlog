@@ -81,20 +81,68 @@ header { position: sticky; top: 0; background: var(--bg); padding-bottom: 12px; 
 .banner.error { background: #fee2e2; color: var(--red); }
 .empty { padding: 48px 16px; text-align: center; color: var(--muted); }
 
+/* Day summary bar: aggregated macros for the visible (filtered) entries. */
+.day-summary {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px 16px;
+  margin-bottom: 16px;
+}
+.day-summary-count { font-size: 0.85rem; color: var(--muted); }
+.day-summary-totals { font-weight: 600; font-size: 1rem; }
+
 .cards { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 16px; }
 
+/* Horizontal card: photos on the left column, body on the right. */
 .card {
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 12px;
   overflow: hidden;
+  display: flex;
+  align-items: stretch;
 }
 .card.reviewed { opacity: 0.65; }
 
-.photos { display: flex; gap: 4px; overflow-x: auto; background: #000; }
-.photos img { height: 180px; width: auto; object-fit: cover; flex: 0 0 auto; }
+/* Photo column: fixed-width on the left, stacks its own photos vertically.
+   align-self: flex-start keeps the column at its own (image) height instead of
+   stretching to the card — so a taller body never leaves a black gap below the
+   photo; max-height caps the rare many-photo case to an internal scroll instead of
+   an oversized card. Empty when an entry has no photo, so the body fills the card. */
+.photos {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background: #000;
+  flex: 0 0 160px;
+  align-self: flex-start;
+  max-height: 360px;
+  overflow-y: auto;
+}
+.photos:empty { display: none; }
+.photos img { width: 160px; height: 160px; object-fit: cover; flex: 0 0 auto; }
 
-.card-body { padding: 14px; }
+.card-body { padding: 14px; flex: 1; min-width: 0; }
+
+/* Narrow screens: fall back to the stacked layout (photos on top, full width). */
+@media (max-width: 480px) {
+  .card { flex-direction: column; }
+  .photos {
+    flex-direction: row;
+    flex-basis: auto;
+    align-self: stretch;
+    max-height: none;
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+  .photos img { height: 180px; width: auto; }
+}
 .card-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
 .card-head .time { color: var(--muted); margin-left: 8px; font-size: 0.85rem; }
 .card-head .totals { color: var(--muted); font-size: 0.85rem; margin-top: 2px; }
