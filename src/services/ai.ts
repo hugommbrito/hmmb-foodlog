@@ -42,6 +42,33 @@ const SYSTEM_PROMPT =
 const ALLOWED_MEDIA_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'] as const;
 type AllowedMediaType = (typeof ALLOWED_MEDIA_TYPES)[number];
 
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // Anthropic API hard limit
+
+// Finds the outermost JSON object by tracking brace depth instead of using
+// lastIndexOf('}'), which breaks when Claude appends prose after the closing brace.
+// Tracks string literals to avoid counting braces inside JSON string values.
+function extractJsonObject(text: string): string {
+  let depth = 0;
+  let start = -1;
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (escaped) { escaped = false; continue; }
+    if (ch === '\\' && inString) { escaped = true; continue; }
+    if (ch === '"') { inString = !inString; continue; }
+    if (inString) continue;
+    if (ch === '{') {
+      if (depth === 0) start = i;
+      depth++;
+    } else if (ch === '}') {
+      depth--;
+      if (depth === 0 && start !== -1) return text.slice(start, i + 1);
+    }
+  }
+  return '';
+}
+
 async function fetchImageAsBase64(url: string): Promise<{ data: string; media_type: AllowedMediaType }> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 30_000);
@@ -50,7 +77,14 @@ async function fetchImageAsBase64(url: string): Promise<{ data: string; media_ty
       fetch(url, { signal: controller.signal })
     );
     if (!res.ok) throw new Error(`HTTP ${res.status} fetching image from R2`);
+    const contentLength = Number(res.headers.get('content-length') ?? 0);
+    if (contentLength > MAX_IMAGE_BYTES) {
+      throw new Error(`[ai] Image too large for Anthropic API: ${contentLength} bytes (max ${MAX_IMAGE_BYTES})`);
+    }
     const buffer = Buffer.from(await res.arrayBuffer());
+    if (buffer.length > MAX_IMAGE_BYTES) {
+      throw new Error(`[ai] Image too large for Anthropic API: ${buffer.length} bytes (max ${MAX_IMAGE_BYTES})`);
+    }
     const contentType = (res.headers.get('content-type') ?? 'image/jpeg').split(';')[0].trim();
     const media_type = ALLOWED_MEDIA_TYPES.includes(contentType as AllowedMediaType)
       ? (contentType as AllowedMediaType)
@@ -136,13 +170,12 @@ export async function analyzeEntry(
     .map((b) => b.text)
     .join('');
 
-  const start = rawText.indexOf('{');
-  const end = rawText.lastIndexOf('}');
-  if (start === -1 || end === -1) {
+  const jsonText = extractJsonObject(rawText);
+  if (!jsonText) {
     throw new Error(`[ai] No JSON found in Claude response: ${rawText.slice(0, 200)}`);
   }
 
-  const parsed: unknown = JSON.parse(rawText.slice(start, end + 1));
+  const parsed: unknown = JSON.parse(jsonText);
   return aiResponseSchema.parse(parsed);
 }
 
@@ -235,12 +268,11 @@ export async function analyzePatterns(entries: PatternEntryInput[]): Promise<Pat
     .map((b) => b.text)
     .join('');
 
-  const start = rawText.indexOf('{');
-  const end = rawText.lastIndexOf('}');
-  if (start === -1 || end === -1) {
+  const jsonText = extractJsonObject(rawText);
+  if (!jsonText) {
     throw new Error(`[ai] No JSON found in patterns response: ${rawText.slice(0, 200)}`);
   }
 
-  const parsed: unknown = JSON.parse(rawText.slice(start, end + 1));
+  const parsed: unknown = JSON.parse(jsonText);
   return patternAnalysisSchema.parse(parsed);
 }
