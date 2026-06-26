@@ -15,6 +15,7 @@ import {
   listShareLinks,
   purgeRequestLogs,
   reanalyzeEntry,
+  searchEntries,
   setEntryContext,
   setToken,
   UnauthorizedError,
@@ -229,6 +230,13 @@ function Review({ onLogout }: { onLogout: () => void }) {
   const [error, setError] = useState<string | null>(null);
   const [showManual, setShowManual] = useState(false);
 
+  // CAP-8: food search across full history
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<EntryWithFoods[] | null>(null);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const isSearchMode = searchQuery.trim().length >= 2;
+
   // Tags rarely change; load once. A failure here is non-fatal — the chips just
   // won't render and review still works.
   useEffect(() => {
@@ -260,13 +268,42 @@ function Review({ onLogout }: { onLogout: () => void }) {
     void load();
   }, [load]);
 
+  // CAP-8: fetch search results whenever query changes (debounced 300 ms).
+  // setSearchLoading is deferred inside the timer so cleanup before 300ms never
+  // leaves the loading spinner stuck.
+  useEffect(() => {
+    const q = searchQuery.trim();
+    if (q.length < 2) {
+      setSearchResults(null);
+      setSearchError(null);
+      return;
+    }
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      if (cancelled) return;
+      setSearchLoading(true);
+      setSearchError(null);
+      searchEntries(q)
+        .then((r) => { if (!cancelled) setSearchResults(r); })
+        .catch((err) => {
+          if (cancelled) return;
+          if (err instanceof UnauthorizedError) onLogout();
+          else setSearchError((err as Error).message);
+        })
+        .finally(() => { if (!cancelled) setSearchLoading(false); });
+    }, 300);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [searchQuery, onLogout]);
+
   const handleAccept = useCallback(
     async (id: string) => {
       try {
         await acceptEntry(id);
-        setEntries((prev) =>
-          prev.map((e) => (e.id === id ? { ...e, reviewed: true } : e))
-        );
+        setEntries((prev) => prev.map((e) => (e.id === id ? { ...e, reviewed: true } : e)));
+        setSearchResults((prev) => prev ? prev.map((e) => (e.id === id ? { ...e, reviewed: true } : e)) : prev);
       } catch (err) {
         if (err instanceof UnauthorizedError) {
           onLogout();
@@ -286,6 +323,7 @@ function Review({ onLogout }: { onLogout: () => void }) {
       try {
         await deleteEntry(id);
         setEntries((prev) => prev.filter((e) => e.id !== id));
+        setSearchResults((prev) => prev ? prev.filter((e) => e.id !== id) : prev);
       } catch (err) {
         if (err instanceof UnauthorizedError) {
           onLogout();
@@ -305,9 +343,8 @@ function Review({ onLogout }: { onLogout: () => void }) {
     async (id: string, payload: ReanalyzeRequest) => {
       try {
         const view = await reanalyzeEntry(id, payload);
-        setEntries((prev) =>
-          prev.map((e) => (e.id === id ? { ...e, ...view } : e))
-        );
+        setEntries((prev) => prev.map((e) => (e.id === id ? { ...e, ...view } : e)));
+        setSearchResults((prev) => prev ? prev.map((e) => (e.id === id ? { ...e, ...view } : e)) : prev);
       } catch (err) {
         if (err instanceof UnauthorizedError) {
           onLogout();
@@ -328,6 +365,13 @@ function Review({ onLogout }: { onLogout: () => void }) {
           prev.map((e) =>
             e.id === id ? { ...e, context: view.context, context_tag_id: view.context_tag_id } : e
           )
+        );
+        setSearchResults((prev) =>
+          prev
+            ? prev.map((e) =>
+                e.id === id ? { ...e, context: view.context, context_tag_id: view.context_tag_id } : e
+              )
+            : prev
         );
       } catch (err) {
         if (err instanceof UnauthorizedError) {
@@ -417,7 +461,20 @@ function Review({ onLogout }: { onLogout: () => void }) {
             + Novo registro
           </button>
         </div>
-        {tags.length > 0 && (
+        <div className="search-bar">
+          <input
+            type="search"
+            placeholder="Buscar alimento no histórico…"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+          />
+          {searchQuery && (
+            <button type="button" className="link" onClick={() => setSearchQuery('')}>
+              Limpar
+            </button>
+          )}
+        </div>
+        {!isSearchMode && tags.length > 0 && (
           <div className="seg tag-filter">
             <button
               type="button"
@@ -448,42 +505,76 @@ function Review({ onLogout }: { onLogout: () => void }) {
         )}
       </header>
 
-      {showManual && (
+      {showManual && !isSearchMode && (
         <ManualEntryForm onSubmit={handleCreateManual} onCancel={() => setShowManual(false)} />
       )}
 
-      {error && <div className="banner error">{error}</div>}
-      {loading && <div className="banner">Carregando…</div>}
-      {!loading && !error && entries.length === 0 && (
-        <div className="empty">Nenhuma entrada neste dia.</div>
-      )}
-      {!loading && !error && entries.length > 0 && visible.length === 0 && (
-        <div className="empty">Nenhuma entrada para este filtro.</div>
-      )}
+      {/* CAP-8: search mode */}
+      {isSearchMode ? (
+        <>
+          {searchError && <div className="banner error">{searchError}</div>}
+          {searchLoading && <div className="banner">Buscando…</div>}
+          {!searchLoading && !searchError && searchResults !== null && searchResults.length === 0 && (
+            <div className="empty">Nenhum resultado para "{searchQuery.trim()}".</div>
+          )}
+          {!searchLoading && !searchError && searchResults && searchResults.length > 0 && (
+            <div className="day-summary">
+              <span className="day-summary-count">
+                {searchResults.length} {searchResults.length === 1 ? 'resultado' : 'resultados'}
+              </span>
+            </div>
+          )}
+          <ul className="cards">
+            {(searchResults ?? []).map((entry) => (
+              <SearchEntryCard
+                key={entry.id}
+                entry={entry}
+                tags={tags}
+                currentTag={entry.context_tag_id ? tagsById.get(entry.context_tag_id) ?? null : null}
+                onAccept={handleAccept}
+                onReanalyze={handleReanalyze}
+                onDelete={handleDelete}
+                onSetContext={handleSetContext}
+              />
+            ))}
+          </ul>
+        </>
+      ) : (
+        <>
+          {error && <div className="banner error">{error}</div>}
+          {loading && <div className="banner">Carregando…</div>}
+          {!loading && !error && entries.length === 0 && (
+            <div className="empty">Nenhuma entrada neste dia.</div>
+          )}
+          {!loading && !error && entries.length > 0 && visible.length === 0 && (
+            <div className="empty">Nenhuma entrada para este filtro.</div>
+          )}
 
-      {!loading && !error && visible.length > 0 && (
-        <div className="day-summary">
-          <span className="day-summary-count">
-            {visible.length} {visible.length === 1 ? 'entrada' : 'entradas'}
-          </span>
-          {summary && <span className="day-summary-totals">{summary}</span>}
-        </div>
-      )}
+          {!loading && !error && visible.length > 0 && (
+            <div className="day-summary">
+              <span className="day-summary-count">
+                {visible.length} {visible.length === 1 ? 'entrada' : 'entradas'}
+              </span>
+              {summary && <span className="day-summary-totals">{summary}</span>}
+            </div>
+          )}
 
-      <ul className="cards">
-        {visible.map((entry) => (
-          <EntryCard
-            key={entry.id}
-            entry={entry}
-            tags={tags}
-            currentTag={entry.context_tag_id ? tagsById.get(entry.context_tag_id) ?? null : null}
-            onAccept={handleAccept}
-            onReanalyze={handleReanalyze}
-            onDelete={handleDelete}
-            onSetContext={handleSetContext}
-          />
-        ))}
-      </ul>
+          <ul className="cards">
+            {visible.map((entry) => (
+              <EntryCard
+                key={entry.id}
+                entry={entry}
+                tags={tags}
+                currentTag={entry.context_tag_id ? tagsById.get(entry.context_tag_id) ?? null : null}
+                onAccept={handleAccept}
+                onReanalyze={handleReanalyze}
+                onDelete={handleDelete}
+                onSetContext={handleSetContext}
+              />
+            ))}
+          </ul>
+        </>
+      )}
     </div>
   );
 }
@@ -810,6 +901,24 @@ function EntryCard({
         )}
       </div>
     </li>
+  );
+}
+
+// CAP-8: thin wrapper that prepends a date label above each card in search results.
+// Renders as two sibling <li> elements inside the parent <ul className="cards">.
+function SearchEntryCard(props: Parameters<typeof EntryCard>[0]) {
+  const date = new Date(props.entry.created_at).toLocaleDateString('pt-BR', {
+    timeZone: 'America/Sao_Paulo',
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    weekday: 'short',
+  });
+  return (
+    <>
+      <li className="search-date-label">{date}</li>
+      <EntryCard {...props} />
+    </>
   );
 }
 

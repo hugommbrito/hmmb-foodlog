@@ -77,6 +77,7 @@ export function PublicShare({ token }: { token: string }) {
   const [data, setData] = useState<SharedPayload | null>(null);
   const [status, setStatus] = useState<'loading' | 'ok' | 'expired' | 'invalid' | 'error'>('loading');
   const [view, setView] = useState<View>('calendar');
+  const [foodFilter, setFoodFilter] = useState('');
 
   // CAP-7b: pattern analysis is fetched lazily — only once the "Padrões" tab is
   // opened — so the calendar/list view never waits on (or pays for) the AI call.
@@ -124,6 +125,17 @@ export function PublicShare({ token }: { token: string }) {
     // patternsStatus is a dep so `onRetry` (idle reset) re-triggers; the ref guard
     // prevents this from re-fetching on the idle→loading→ok transitions.
   }, [view, patternsStatus, token]);
+
+  // CAP-8: client-side filter by food name — no extra network call needed since
+  // the full period payload is already loaded.
+  const filteredEntries = useMemo(() => {
+    if (!data) return [];
+    const q = foodFilter.trim().toLowerCase();
+    if (q.length < 2) return data.entries;
+    return data.entries.filter((e) =>
+      e.foods.some((f) => f.description.toLowerCase().includes(q))
+    );
+  }, [data, foodFilter]);
 
   if (status === 'loading') {
     return (
@@ -180,6 +192,26 @@ export function PublicShare({ token }: { token: string }) {
             Padrões
           </button>
         </div>
+        {view !== 'patterns' && (
+          <div className="search-bar">
+            <input
+              type="search"
+              placeholder="Filtrar por alimento…"
+              value={foodFilter}
+              onChange={(e) => setFoodFilter(e.target.value)}
+            />
+            {foodFilter && (
+              <button type="button" className="link" onClick={() => setFoodFilter('')}>
+                Limpar
+              </button>
+            )}
+            {foodFilter.trim().length >= 2 && (
+              <span style={{ fontSize: '0.85rem', color: 'var(--muted)' }}>
+                {filteredEntries.length} resultado(s)
+              </span>
+            )}
+          </div>
+        )}
       </header>
 
       {view === 'patterns' ? (
@@ -191,12 +223,16 @@ export function PublicShare({ token }: { token: string }) {
             setPatternsStatus('idle');
           }}
         />
-      ) : data.entries.length === 0 ? (
-        <div className="empty">Sem registros neste período.</div>
+      ) : filteredEntries.length === 0 ? (
+        <div className="empty">
+          {foodFilter.trim().length >= 2
+            ? `Nenhum resultado para "${foodFilter.trim()}".`
+            : 'Sem registros neste período.'}
+        </div>
       ) : view === 'calendar' ? (
-        <CalendarView entries={data.entries} start={data.period_start} end={data.period_end} />
+        <CalendarView entries={filteredEntries} start={data.period_start} end={data.period_end} />
       ) : (
-        <ListView entries={data.entries} />
+        <ListView entries={filteredEntries} />
       )}
     </div>
   );

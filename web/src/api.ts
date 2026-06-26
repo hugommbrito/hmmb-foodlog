@@ -63,6 +63,12 @@ export function fetchEntries(date?: string): Promise<EntryWithFoods[]> {
   return request<EntryWithFoods[]>(`/entries${q}`);
 }
 
+// CAP-8: search across all history by food name (case-insensitive substring).
+// q must be ≥2 chars; the backend returns 400 otherwise.
+export function searchEntries(q: string): Promise<EntryWithFoods[]> {
+  return request<EntryWithFoods[]>(`/entries/search?q=${encodeURIComponent(q)}`);
+}
+
 // Mark an entry reviewed. Backend returns the updated row (foods not included);
 // callers only rely on the request succeeding.
 export function acceptEntry(id: string): Promise<{ reviewed: boolean }> {

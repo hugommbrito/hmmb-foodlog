@@ -144,6 +144,46 @@ export async function entriesRoutes(app: FastifyInstance): Promise<void> {
     return reply.status(200).send(entries);
   });
 
+  // CAP-8: search entries by food name across the full history.
+  // Returns EntryWithFoods[] (all foods per entry) in chronological order.
+  // At least one food_item must match the query (ILIKE) for the entry to appear.
+  app.get<{ Querystring: { q?: string } }>('/entries/search', async (request, reply) => {
+    const userId = await authenticate(request);
+    if (!userId) {
+      return reply.status(401).send({ error: 'Missing or invalid token' });
+    }
+
+    const q = typeof request.query.q === 'string' ? request.query.q.trim() : '';
+    if (q.length < 2) {
+      return reply.status(400).send({ error: 'Query muito curta (mínimo 2 caracteres)' });
+    }
+
+    // Escape SQL LIKE wildcards so '%' and '_' in the query are treated as literals.
+    const escaped = q.replace(/[%_\\]/g, (c) => `\\${c}`);
+
+    const entries = await query<EntryWithFoods>(
+      `SELECT e.*, ct.name AS context,
+              COALESCE(
+                json_agg(f.* ORDER BY f.confidence ASC, f.id ASC) FILTER (WHERE f.id IS NOT NULL),
+                '[]'
+              ) AS foods
+       FROM entries e
+       LEFT JOIN food_items f ON f.entry_id = e.id
+       LEFT JOIN context_tags ct ON ct.id = e.context_tag_id
+       WHERE e.user_id = $1
+         AND EXISTS (
+           SELECT 1 FROM food_items fi2
+           WHERE fi2.entry_id = e.id
+             AND lower(fi2.description) LIKE '%' || lower($2) || '%' ESCAPE '\\'
+         )
+       GROUP BY e.id, ct.name
+       ORDER BY e.created_at ASC`,
+      [userId, escaped]
+    );
+
+    return reply.status(200).send(entries);
+  });
+
   // Accept an entry: mark it reviewed. Scoped to the owner via user_id.
   app.patch<{ Params: { id: string } }>('/entries/:id', async (request, reply) => {
     const userId = await authenticate(request);

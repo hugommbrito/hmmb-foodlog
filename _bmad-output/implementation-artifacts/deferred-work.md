@@ -76,9 +76,13 @@ Gerado automaticamente toda semana. Disponível apenas no web app. Contém ≥3 
 
 Gera link com prazo configurável. Nutricionista acessa 3 visualizações (calendário, lista com macros, análise de padrões) sem login. Link expirado retorna erro.
 
-## CAP-8 — Busca no histórico por alimento
+## CAP-8 — Busca no histórico por alimento ✅ ENTREGUE em `spec-cap-8-food-search.md`
 
-Busca por nome de alimento retorna todas as entradas correspondentes em ordem cronológica (usa full-text search do PostgreSQL).
+Implementado em 2026-06-26. Itens diferidos encontrados na revisão:
+
+- **Índice pg_trgm para performance**: quando o histórico ultrapassar ~5 k entries, adicionar `CREATE EXTENSION IF NOT EXISTS pg_trgm` e `CREATE INDEX ON food_items USING gin(lower(description) gin_trgm_ops)`. Hoje usa ILIKE sem índice (adequado para single-user pessoal).
+- **Acento inconsistente entre server e Share.tsx**: `GET /entries/search` usa `lower() ILIKE` (nativo do PG; acento-ciente no collation `pt_BR.UTF-8`), enquanto o filtro client-side da view do nutricionista (`Share.tsx`) usa `String.prototype.toLowerCase().includes()` (JS simples). Para pt-BR o comportamento é equivalente, mas pode divergir em strings com acento especial fora do plano básico. Mitigação: normalizar com `Intl.Collator` no frontend se for reportado divergência.
+- **Reanalyze deixa entry obsoleta em searchResults**: após re-análise, uma entry pode ficar visível em searchResults com foods atualizados que já não batem com o termo buscado. O usuário não é confundido (pode limpar e rebuscar), mas idealmente searchResults seria invalidado e rebuscado após reanalyze em search mode.
 
 ## CAP-9 — Tag de contexto (casa/restaurante/trabalho/rua)
 

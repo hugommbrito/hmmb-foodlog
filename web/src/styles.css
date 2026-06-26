@@ -268,6 +268,20 @@ button.link.danger { color: var(--red); }
 /* Listing order/tag features: colored badge, tag filter, sort toggle, color picker */
 .sort-toggle { white-space: nowrap; }
 
+/* CAP-8: search bar in Review header */
+.search-bar { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.search-bar input[type='search'] { flex: 1; min-width: 0; }
+
+/* Date label separating entries from different days in the search results list */
+.search-date-label {
+  list-style: none;
+  padding: 4px 0 2px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: capitalize;
+}
+
 /* Tag filter segment wraps when the user has many tags; each option shows a swatch. */
 .tag-filter { flex-wrap: wrap; }
 .tag-filter .seg-btn { display: inline-flex; align-items: center; gap: 6px; }
