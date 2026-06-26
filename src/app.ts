@@ -8,6 +8,7 @@ import { entriesRoutes } from './routes/entries';
 import { tagsRoutes } from './routes/tags';
 import { shareRoutes } from './routes/share';
 import { auditRoutes } from './routes/audit';
+import { reportRoutes } from './routes/report';
 import { registerAuditHooks } from './plugins/audit';
 
 const MAX_PHOTO_BYTES = 20 * 1024 * 1024; // 20 MB per photo
@@ -42,6 +43,7 @@ export function buildApp() {
   app.register(tagsRoutes);
   app.register(shareRoutes);
   app.register(auditRoutes);
+  app.register(reportRoutes);
 
   return app;
 }

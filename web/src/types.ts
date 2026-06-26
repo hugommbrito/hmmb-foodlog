@@ -108,6 +108,12 @@ export interface PatternsPayload {
   insufficient?: boolean;
 }
 
+// CAP-6: payload of GET /report/weekly (authenticated). Either the analysis
+// (with period and generated_at) or `insufficient` when there's too little data.
+export type WeeklyReportPayload =
+  | { generated_at: string; period_start: string; period_end: string; analysis: PatternAnalysis }
+  | { insufficient: true };
+
 // Mirrors the backend `RequestLog` (src/types/models.ts). One persisted request
 // log; direction is 'inbound' or 'outbound'. created_at arrives as an ISO string.
 export interface RequestLog {

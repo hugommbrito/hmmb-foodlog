@@ -40,6 +40,13 @@ Aceitas conscientemente para uso pessoal single-user; revisar se virar multiusu�
 - **FK violation → 500/retry ao apagar uma tag concorrentemente**: em `PATCH /entries/:id/context` (`src/routes/entries.ts`) há janela TOCTOU entre o SELECT de posse da tag e o UPDATE; e no worker (`src/workers/analyze-entry.ts`) entre buscar as tags e o UPDATE com a tag sugerida pela IA. Se a tag for apagada nesse instante, o UPDATE viola a FK (`23503`) → 500 no endpoint ou job falho/retentado no worker. Janela de milissegundos e ator único (mesma classe de concorrência já diferida em CAP-4/CAP-5). Mitigação se exposto: `try/catch` do código `23503` → 400/`SET NULL`, ou lock por entry.
 - **Match IA case-insensitive em JS vs `lower()` do Postgres**: o worker casa `result.context` com as tags via `String.toLowerCase()` em vez do `lower()` do PG (índice único). Idêntico para pt-BR; só divergiria em locales exóticos (ex.: I turco). Trocar por match em SQL se houver tags fora de pt-BR.
 
+## Melhorias técnicas diferidas — CAP-6 relatório semanal (encontradas na revisão)
+
+Aceitas conscientemente para uso pessoal single-user.
+
+- **Formato de log do erro de `analyzePatterns`**: `app.log.error({ err: (err as Error).message }, ...)` em `src/routes/report.ts` serializa o erro como string em vez de objeto completo, perdendo stack e causa. Trocar para `app.log.error(err, '[report] ...')` para melhor diagnóstico em produção.
+- **Race condition no cache miss**: dois `GET /report/weekly` simultâneos para o mesmo usuário no mesmo momento do dia ambos passam pelo cache-miss, chamam `analyzePatterns` em paralelo e fazem UPSERT (last-writer-wins). Mesma classe de concorrência já diferida em CAP-4/5/7b; aceitável para uso pessoal single-user. Mitigação futura: advisory lock por `user_id` no Postgres ou mutex em memória (single-process).
+
 ## Melhoria técnica diferida — runner de migration não-transacional (pré-existente)
 
 - **`src/db/migrate.ts` roda cada arquivo `.sql` via um único `pool.query(sql)` sem `BEGIN/COMMIT`**: uma falha no meio de um arquivo deixa estado parcial (sem tabela de migrations aplicadas, o re-run depende de `IF NOT EXISTS`/`ON CONFLICT`, que não corrige definições divergentes de uma aplicação parcial anterior). Afeta todas as migrations, não só a 005. Mitigação: envolver a execução de cada arquivo em transação no runner.

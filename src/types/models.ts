@@ -199,3 +199,30 @@ export interface WebhookPayload {
   // CAP-5: free-text reply used to correct the most recent entry of the day.
   text?: { message?: string } | null;
 }
+
+// CAP-6: intermediate DB-result type for the entries query in report.ts.
+// `foods` is a JSON array already deserialized by pg from the json_agg result.
+export interface EntryQueryRow {
+  created_at: Date;
+  context: string | null;
+  foods: Array<{
+    description: string;
+    quantity_g: string | null;
+    kcal: number | null;
+    protein_g: number | null;
+    carbs_g: number | null;
+    fat_g: number | null;
+    confidence: number;
+  }>;
+}
+
+// CAP-6: one cached weekly report per user. `analysis_json` is JSONB — pg
+// deserializes it automatically to `PatternAnalysis` on read. Date fields are
+// returned as plain strings (YYYY-MM-DD) to avoid timezone shift on JS Date parse.
+export interface WeeklyReportRow {
+  user_id: string;
+  period_start: string; // DATE as string YYYY-MM-DD
+  period_end: string;   // DATE as string YYYY-MM-DD
+  analysis_json: PatternAnalysis; // pg deserializes JSONB automatically
+  generated_at: Date;
+}

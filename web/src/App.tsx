@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   acceptEntry,
   clearToken,
@@ -11,6 +11,7 @@ import {
   fetchEntries,
   fetchRequestLogs,
   fetchTags,
+  fetchWeeklyReport,
   getToken,
   listShareLinks,
   purgeRequestLogs,
@@ -28,6 +29,7 @@ import type {
   ReanalyzeRequest,
   RequestLog,
   ShareLink,
+  WeeklyReportPayload,
 } from './types';
 
 // YYYY-MM-DD for "today", pinned to the same timezone the backend filters on
@@ -140,7 +142,7 @@ function textOn(hex: string): string {
   return lum > 0.6 ? '#111' : '#fff';
 }
 
-type Tab = 'review' | 'tags' | 'share' | 'audit';
+type Tab = 'review' | 'tags' | 'share' | 'audit' | 'report';
 
 // Tag filter selection: a specific tag id, or the two synthetic options.
 type TagFilter = 'all' | 'none' | string;
@@ -185,11 +187,18 @@ function Shell({ onLogout }: { onLogout: () => void }) {
         >
           Auditoria
         </button>
+        <button
+          className={tab === 'report' ? 'tab active' : 'tab'}
+          onClick={() => setTab('report')}
+        >
+          Relatório
+        </button>
       </nav>
       {tab === 'review' && <Review onLogout={onLogout} />}
       {tab === 'tags' && <TagsManager onLogout={onLogout} />}
       {tab === 'share' && <ShareManager onLogout={onLogout} />}
       {tab === 'audit' && <Audit onLogout={onLogout} />}
+      {tab === 'report' && <WeeklyReportView onLogout={onLogout} />}
     </div>
   );
 }
@@ -919,6 +928,132 @@ function SearchEntryCard(props: Parameters<typeof EntryCard>[0]) {
       <li className="search-date-label">{date}</li>
       <EntryCard {...props} />
     </>
+  );
+}
+
+// CAP-6: weekly behavioral-pattern report. Loaded lazily once per mount of the
+// tab; a useRef guards against duplicate fetches when the component re-renders.
+// States:
+//   idle     — component just mounted (should not be visible long)
+//   loading  — fetch in flight
+//   insufficient — < 3 days of data in the last 7 days
+//   error    — network/AI failure; user can retry
+//   ok       — analysis ready (period + observations)
+type WeeklyReportStatus = 'idle' | 'loading' | 'insufficient' | 'error' | 'ok';
+
+function WeeklyReportView({ onLogout }: { onLogout: () => void }) {
+  type ReportData = Extract<WeeklyReportPayload, { generated_at: string }>;
+  const [status, setStatus] = useState<WeeklyReportStatus>('idle');
+  const [data, setData] = useState<ReportData | null>(null);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  // Dedupe guard: same pattern as PatternsView in Share.tsx.
+  const requested = useRef(false);
+
+  const load = () => {
+    requested.current = true;
+    setStatus('loading');
+    setErrorMsg(null);
+    fetchWeeklyReport()
+      .then((payload) => {
+        if ('insufficient' in payload && payload.insufficient) {
+          setStatus('insufficient');
+        } else {
+          setData(payload as ReportData);
+          setStatus('ok');
+        }
+      })
+      .catch((err) => {
+        if (err instanceof UnauthorizedError) {
+          onLogout();
+          return;
+        }
+        setErrorMsg((err as Error).message);
+        setStatus('error');
+      });
+  };
+
+  // Load once when the component mounts (the tab is opened for the first time).
+  useEffect(() => {
+    if (!requested.current) {
+      load();
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const reportData = status === 'ok' ? data : null;
+
+  function fmtDate(d: string): string {
+    const [, m, day] = d.split('-');
+    return `${day}/${m}`;
+  }
+
+  function fmtTime(iso: string): string {
+    return new Date(iso).toLocaleTimeString('pt-BR', {
+      timeZone: 'America/Sao_Paulo',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  }
+
+  return (
+    <div className="review">
+      <header>
+        <div className="header-row">
+          <h1>Relatório semanal</h1>
+          <button className="link" onClick={onLogout}>Sair</button>
+        </div>
+      </header>
+
+      {status === 'loading' && (
+        <div className="banner">Analisando padrões com IA…</div>
+      )}
+
+      {status === 'insufficient' && (
+        <div className="empty">
+          Dados insuficientes para gerar relatório (mínimo 3 dias de registro nos últimos 7 dias).
+        </div>
+      )}
+
+      {status === 'error' && (
+        <div className="empty">
+          <p>{errorMsg ?? 'Não foi possível gerar o relatório.'}</p>
+          <button
+            type="button"
+            className="seg-btn"
+            onClick={() => {
+              requested.current = false;
+              load();
+            }}
+          >
+            Tentar novamente
+          </button>
+        </div>
+      )}
+
+      {status === 'ok' && reportData && (
+        <div className="patterns">
+          <div className="weekly-report-header">
+            <span className="weekly-report-period">
+              Últimos 7 dias: {fmtDate(reportData.period_start)} – {fmtDate(reportData.period_end)}
+            </span>
+            <span className="patterns-meta">gerado às {fmtTime(reportData.generated_at)}</span>
+          </div>
+          {reportData.analysis.summary && (
+            <p className="patterns-summary">{reportData.analysis.summary}</p>
+          )}
+          <ul className="pattern-list">
+            {reportData.analysis.observations.map((o, i) => (
+              <li className="pattern-card" key={i}>
+                <span className="pattern-cat">{o.category}</span>
+                <strong className="pattern-title">{o.title}</strong>
+                <p className="pattern-detail">{o.detail}</p>
+              </li>
+            ))}
+          </ul>
+          <p className="patterns-meta">Análise gerada por IA a partir dos seus registros da semana.</p>
+        </div>
+      )}
+    </div>
   );
 }
 

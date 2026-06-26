@@ -7,6 +7,7 @@ import type {
   RequestLog,
   ShareLink,
   SharedPayload,
+  WeeklyReportPayload,
 } from './types';
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:3000').replace(/\/$/, '');
@@ -227,4 +228,12 @@ export function fetchRequestLogs(
 export function purgeRequestLogs(before?: string): Promise<{ deleted: number }> {
   const q = before ? `?before=${encodeURIComponent(before)}` : '';
   return request<{ deleted: number }>(`/audit/requests${q}`, { method: 'DELETE' });
+}
+
+// CAP-6: authenticated weekly behavioral-pattern report.
+// Lazy + cached: the backend generates once per day (SP timezone) and caches the
+// result in `weekly_reports`. 401 → UnauthorizedError (same as other authed calls);
+// 502 → throws a generic Error with the server message (UI offers retry).
+export function fetchWeeklyReport(): Promise<WeeklyReportPayload> {
+  return request<WeeklyReportPayload>('/report/weekly');
 }
