@@ -42,7 +42,7 @@ const SYSTEM_PROMPT =
 const ALLOWED_MEDIA_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'] as const;
 type AllowedMediaType = (typeof ALLOWED_MEDIA_TYPES)[number];
 
-const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // Anthropic API hard limit
+export const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // Anthropic API hard limit
 
 // Finds the outermost JSON object by tracking brace depth instead of using
 // lastIndexOf('}'), which breaks when Claude appends prose after the closing brace.
