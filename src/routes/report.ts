@@ -158,7 +158,8 @@ export async function reportRoutes(app: FastifyInstance): Promise<void> {
       analysis = await analyzePatterns(entries);
     } catch (err) {
       app.log.error(err, '[report] pattern analysis failed');
-      return reply.status(502).send({ error: 'Não foi possível gerar o relatório' });
+      const detail = err instanceof Error ? err.message : String(err);
+      return reply.status(502).send({ error: 'Não foi possível gerar o relatório', detail });
     }
 
     // --- Upsert cache (conflict on the composite key user_id + period) ---
