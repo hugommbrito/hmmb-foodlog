@@ -66,12 +66,20 @@ async function processJob(job: Job<AnalyzeEntryJobData>): Promise<void> {
 
   // A re-analysis that comes back with zero foods must NOT wipe the prior analysis:
   // the DELETE below would commit with no replacement and destroy the user's data.
-  // Keep the previous result intact and bail (ai_cycles stays put, so the route
-  // reports 'pending'). On initial capture (no correction) an empty result is a
-  // legitimate "nothing identified" outcome and is allowed to persist.
+  // Only bail when there are existing food_items to protect — if the prior analysis
+  // was also empty (e.g. initial capture returned nothing), allow the transaction to
+  // proceed so ai_cycles advances and the entry exits the pending loop.
+  // On initial capture (no correction) an empty result is a legitimate "nothing
+  // identified" outcome and is allowed to persist.
   if (correction && result.foods.length === 0) {
-    console.warn(`[worker] Re-analysis of ${entryId} returned no foods; keeping previous analysis`);
-    return;
+    const existingRows = await query<{ count: string }>(
+      'SELECT COUNT(*) AS count FROM food_items WHERE entry_id = $1',
+      [entryId]
+    );
+    if (Number(existingRows[0]?.count ?? 0) > 0) {
+      console.warn(`[worker] Re-analysis of ${entryId} returned no foods; keeping previous analysis`);
+      return;
+    }
   }
 
   // DELETE + INSERT + UPDATE run in ONE transaction so a re-analysis either fully

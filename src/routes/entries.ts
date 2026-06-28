@@ -8,6 +8,8 @@ import { User, Entry, FoodItem, EntryWithFoods, EntryAnalysisView, PhotoCaptureR
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+// Must match MAX_IMAGE_BYTES in src/services/ai.ts — Anthropic API hard limit.
+const MAX_AI_PHOTO_BYTES = 5 * 1024 * 1024;
 // Floor for a manually picked created_at: the app has no data before this, so an
 // earlier date is a typo, not a real backdated meal.
 const MIN_ENTRY_DATE = Date.UTC(2020, 0, 1);
@@ -310,6 +312,10 @@ export async function entriesRoutes(app: FastifyInstance): Promise<void> {
           validationError = 'Empty image file';
           continue;
         }
+        if (buffer.length > MAX_AI_PHOTO_BYTES) {
+          validationError = `Photo too large (${(buffer.length / 1024 / 1024).toFixed(1)} MB); maximum is 5 MB`;
+          continue;
+        }
         photos.push({ buffer, mimetype: part.mimetype });
       }
     } catch (err) {
@@ -325,7 +331,7 @@ export async function entriesRoutes(app: FastifyInstance): Promise<void> {
     }
 
     if (validationError) {
-      return reply.status(400).send({ error: validationError });
+      return reply.status(413).send({ error: validationError });
     }
     if (photos.length === 0) {
       return reply.status(400).send({ error: 'No photo provided' });
@@ -415,6 +421,10 @@ export async function entriesRoutes(app: FastifyInstance): Promise<void> {
             validationError = 'Empty image file';
             continue;
           }
+          if (buffer.length > MAX_AI_PHOTO_BYTES) {
+            validationError = `Photo too large (${(buffer.length / 1024 / 1024).toFixed(1)} MB); maximum is 5 MB`;
+            continue;
+          }
           photos.push({ buffer, mimetype: part.mimetype });
         } else if (part.fieldname === 'description') {
           description = typeof part.value === 'string' ? part.value : String(part.value ?? '');
@@ -435,7 +445,7 @@ export async function entriesRoutes(app: FastifyInstance): Promise<void> {
     }
 
     if (validationError) {
-      return reply.status(400).send({ error: validationError });
+      return reply.status(413).send({ error: validationError });
     }
 
     description = description.trim();
@@ -563,12 +573,14 @@ export async function entriesRoutes(app: FastifyInstance): Promise<void> {
       const priorCycles = owned[0].ai_cycles;
 
       const correction = buildCorrection(request.body);
-      if (!correction) {
+      // When ai_cycles=0 the initial analysis never landed; allow a plain retry
+      // without a correction body so the user can unblock without typing food names.
+      if (!correction && priorCycles > 0) {
         return reply.status(400).send({ error: 'Nothing to correct: provide a correction or edited foods' });
       }
 
       try {
-        const job = await enqueueAnalysis(id, correction);
+        const job = await enqueueAnalysis(id, correction ?? undefined);
         await waitForAnalysis(job, config.ANALYSIS_WAIT_TIMEOUT_MS);
       } catch (err) {
         request.log.warn(
