@@ -69,6 +69,7 @@ export interface PhotoCaptureResponse {
   title: string | null;
   ai_confidence_overall: number;
   foods: FoodItem[];
+  message: string;
 }
 
 export interface EntryAnalysisView {

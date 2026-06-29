@@ -7,6 +7,43 @@ import { uploadPhoto, compressForAi } from '../services/storage';
 import { User, Entry, FoodItem, EntryWithFoods, EntryAnalysisView, PhotoCaptureResponse, ReanalyzeRequest } from '../types/models';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function buildShortcutMessage(
+  status: 'pending' | 'done',
+  title: string | null,
+  foods: FoodItem[]
+): string {
+  if (status === 'pending') {
+    return '📸 Foto capturada! Análise ainda em andamento — verifique o app em instantes.';
+  }
+  if (foods.length === 0) {
+    return '📸 Foto registrada, mas não foi possível identificar os alimentos.';
+  }
+
+  const header = title ?? (foods.length === 1 ? foods[0].description : 'Refeição registrada');
+  const lines: string[] = [`🍽️ ${header}`];
+
+  for (const food of foods) {
+    const parts: string[] = [];
+    if (food.quantity) parts.push(food.quantity);
+    if (food.kcal != null) parts.push(`${Math.round(food.kcal)} kcal`);
+    const detail = parts.length > 0 ? ` (${parts.join(' · ')})` : '';
+    lines.push(`• ${food.description}${detail}`);
+  }
+
+  const hasNutrition = foods.some((f) => f.kcal != null);
+  if (hasNutrition) {
+    const totalKcal = foods.reduce((s, f) => s + (f.kcal ?? 0), 0);
+    const totalP = foods.reduce((s, f) => s + (f.protein_g ?? 0), 0);
+    const totalF = foods.reduce((s, f) => s + (f.fat_g ?? 0), 0);
+    const totalC = foods.reduce((s, f) => s + (f.carbs_g ?? 0), 0);
+    lines.push(
+      `Total: ${Math.round(totalKcal)} kcal | P: ${Math.round(totalP)}g | G: ${Math.round(totalF)}g | C: ${Math.round(totalC)}g`
+    );
+  }
+
+  return lines.join('\n');
+}
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 // Floor for a manually picked created_at: the app has no data before this, so an
 // earlier date is a typo, not a real backdated meal.
@@ -369,12 +406,15 @@ export async function entriesRoutes(app: FastifyInstance): Promise<void> {
     }
 
     const view = await loadEntryView(entryId, user.id);
+    const status = view?.analysis_status ?? 'pending';
+    const foods = view?.foods ?? [];
     const body: PhotoCaptureResponse = {
       entry_id: entryId,
-      analysis_status: view?.analysis_status ?? 'pending',
+      analysis_status: status,
       title: view?.title ?? null,
       ai_confidence_overall: view?.ai_confidence_overall ?? 0,
-      foods: view?.foods ?? [],
+      foods,
+      message: buildShortcutMessage(status, view?.title ?? null, foods),
     };
     return reply.status(201).send(body);
   });
