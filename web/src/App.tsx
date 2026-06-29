@@ -771,9 +771,11 @@ function EntryCard({
   return (
     <li className={`card ${entry.reviewed ? 'reviewed' : ''}`}>
       <div className="photos">
-        {entry.photos.map((url, i) => (
-          <img key={i} src={url} alt={`Foto ${i + 1}`} loading="lazy" />
-        ))}
+        {entry.photos.length > 0
+          ? entry.photos.map((url, i) => (
+              <img key={i} src={url} alt={`Foto ${i + 1}`} loading="lazy" />
+            ))
+          : <div className="photo-placeholder" aria-hidden="true" />}
       </div>
       <div className="card-body">
         <div className="card-head">
