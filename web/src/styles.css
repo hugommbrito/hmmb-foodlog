@@ -61,6 +61,7 @@ h2 { font-size: 1.05rem; font-weight: 600; margin: 0; }
 
 button {
   font: inherit;
+  font-weight: 600;
   cursor: pointer;
   border: none;
   border-radius: var(--radius-input);
@@ -68,8 +69,10 @@ button {
   background: var(--accent);
   color: #fff;
 }
-button:disabled { opacity: 0.4; cursor: default; }
-button.link { background: none; color: var(--muted); padding: var(--space-1) var(--space-2); }
+button:disabled { opacity: 0.4; cursor: not-allowed; }
+button.link { background: none; color: var(--muted); padding: var(--space-1) var(--space-2); font-weight: 400; }
+button.link:hover { color: var(--text); }
+button.link.danger:hover { color: var(--danger); }
 
 input {
   font: inherit;
@@ -259,6 +262,7 @@ button.link.danger { color: var(--danger); }
   gap: var(--space-2);
   background: none;
   color: var(--text);
+  font-weight: 400;
   border-radius: 0;
   padding: var(--space-2) var(--space-3);
   text-align: left;
@@ -269,7 +273,7 @@ button.link.danger { color: var(--danger); }
 
 .seg { display: flex; gap: var(--space-1); margin: var(--space-3) 0 var(--space-2); }
 .seg-btn { background: none; border: 1px solid var(--border); color: var(--muted); padding: var(--space-1) var(--space-3); border-radius: var(--radius-pill); font-size: 0.8rem; }
-.seg-btn.active { color: var(--text); border-color: var(--text); font-weight: 600; }
+.seg-btn.active { color: var(--accent); border-color: var(--accent); font-weight: 600; }
 
 .dir { font-size: 0.85rem; font-weight: 700; width: 1.1em; text-align: center; }
 .dir-in { color: var(--muted); }
@@ -306,7 +310,7 @@ button.link.danger { color: var(--danger); }
   border-radius: var(--radius-pill);
   font-size: 0.8rem;
 }
-.chip.active { background: var(--text); border-color: var(--text); color: #fff; font-weight: 600; }
+.chip.active { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
 
 /* CAP-9 — tag management screen */
 .tag-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: var(--space-2); }

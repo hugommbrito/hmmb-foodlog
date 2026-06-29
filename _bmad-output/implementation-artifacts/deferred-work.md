@@ -142,6 +142,10 @@ Entregue em `spec-cap-7b-nutritionist-pattern-analysis.md` (endpoint público la
 - **Sem cap no tamanho do digest enviado ao Claude**: `analyzePatterns` (`src/services/ai.ts`) serializa **todas** as entradas do período sem limite de quantidade/caracteres. Período muito longo (ex.: 90 dias com muitas refeições) infla o prompt (custo/latência) e pode truncar a saída (`max_tokens: 1536`) → `JSON.parse` falha → 502 não-cacheado → reabrir re-tenta e paga de novo. Irrelevante no volume pessoal; se exposto/longo, capar nº de entradas/tamanho do digest e/ou detectar `stop_reason === 'max_tokens'`.
 - **Cache nunca invalida após mudança nas entradas do período**: decisão "Ask First" do spec — `analysis_json` é imutável até o link expirar. Se o dono corrigir/apagar/adicionar entradas depois da 1ª geração, o nutricionista vê uma análise desatualizada. Aceitável para período histórico/uso pessoal. Mitigação: limpar `analysis_json` ao mutar entradas cobertas, ou guardar um fingerprint das entradas e recomputar na divergência.
 
+## Epic 1 — Story 1.2: tab active state usa --text em vez de --accent
+
+- **`.tab.active` usa `color: var(--text)` e `border-bottom-color: var(--text)`** em vez de `var(--accent)`. Isso é inconsistente com `.chip.active` e `.seg-btn.active` que foram atualizados para `--accent` na Story 1.2. Em dark mode, a aba ativa fica com sublinhado quase branco, divergindo do padrão visual de seleção com accent. Corrigir na Story 2.1 (Reorganização da Navegação) junto com as demais mudanças do tab bar (5 abas, Auditoria fora do nav).
+
 ## Epic 1 — Design System: valores sub-grade diferidos (encontrados na revisão da Story 1.1)
 
 Valores abaixo de `--space-1` (4px) e acima de `--space-6` (32px) que ficaram hardcoded em `web/src/styles.css`. Visualmente corretos e pre-existentes; migrar quando a escala de tokens for expandida.
