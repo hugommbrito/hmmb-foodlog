@@ -223,11 +223,167 @@ function Shell({ onLogout }: { onLogout: () => void }) {
   );
 }
 
-function Dashboard({ onLogout: _onLogout }: { onLogout: () => void }) {
+type DashboardSlot = { date: string; status: 'loading' | 'done' | 'error'; entries: EntryWithFoods[] };
+type DashboardPeriod = '7d' | '14d' | '30d' | 'custom';
+type DashboardView = 'photowall' | 'timeline';
+
+function addDaysToDate(dateStr: string, days: number): string {
+  const d = new Date(dateStr + 'T12:00:00');
+  d.setDate(d.getDate() + days);
+  const y = d.getFullYear();
+  const mo = String(d.getMonth() + 1).padStart(2, '0');
+  const dy = String(d.getDate()).padStart(2, '0');
+  return `${y}-${mo}-${dy}`;
+}
+
+function getDashboardDays(period: DashboardPeriod, start: string, end: string): string[] {
+  const today = todayLocal();
+  if (period === 'custom') {
+    if (!start || !end || end < start) return [];
+    const diffDays = Math.floor(
+      (new Date(end + 'T12:00:00').getTime() - new Date(start + 'T12:00:00').getTime()) / 86_400_000
+    );
+    const count = Math.min(diffDays + 1, 90);
+    return Array.from({ length: count }, (_, i) => {
+      const d = new Date(start + 'T12:00:00');
+      d.setDate(d.getDate() + i);
+      const y = d.getFullYear();
+      const mo = String(d.getMonth() + 1).padStart(2, '0');
+      const dy = String(d.getDate()).padStart(2, '0');
+      return `${y}-${mo}-${dy}`;
+    }).filter((d) => d <= today);
+  }
+  const n = period === '7d' ? 7 : period === '14d' ? 14 : 30;
+  return Array.from({ length: n }, (_, i) => {
+    const d = new Date(today + 'T12:00:00');
+    d.setDate(d.getDate() - (n - 1 - i));
+    const y = d.getFullYear();
+    const mo = String(d.getMonth() + 1).padStart(2, '0');
+    const dy = String(d.getDate()).padStart(2, '0');
+    return `${y}-${mo}-${dy}`;
+  });
+}
+
+function Dashboard({ onLogout }: { onLogout: () => void }) {
+  const [period, setPeriod] = useState<DashboardPeriod>('7d');
+  const [customStart, setCustomStart] = useState<string>(todayLocal());
+  const [customEnd, setCustomEnd] = useState<string>(todayLocal());
+  const [view, setView] = useState<DashboardView>('photowall');
+  const [slots, setSlots] = useState<DashboardSlot[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loggedOut = { current: false };
+    const days = getDashboardDays(period, customStart, customEnd);
+    setSlots(days.map((d) => ({ date: d, status: 'loading', entries: [] })));
+    days.forEach((d) => {
+      fetchEntries(d)
+        .then((entries) => {
+          if (cancelled) return;
+          setSlots((prev) => prev.map((s) => s.date === d ? { ...s, status: 'done', entries } : s));
+        })
+        .catch((err) => {
+          if (cancelled) return;
+          if (err instanceof UnauthorizedError) {
+            if (!loggedOut.current) { loggedOut.current = true; onLogout(); }
+            return;
+          }
+          setSlots((prev) => prev.map((s) => s.date === d ? { ...s, status: 'error', entries: [] } : s));
+        });
+    });
+    return () => { cancelled = true; };
+  }, [period, customStart, customEnd, onLogout]);
+
+  const isEmpty = slots.length > 0
+    && slots.every((s) => s.status !== 'loading')
+    && slots.every((s) => s.entries.length === 0);
+  const today = todayLocal();
+
+  const handleEndChange = (newEnd: string) => {
+    const maxEnd = addDaysToDate(customStart, 89);
+    setCustomEnd(newEnd > maxEnd ? maxEnd : newEnd);
+  };
+
   return (
-    <div className="dashboard-stub">
-      <h1>Painel</h1>
+    <div className="dashboard">
+      <div className="period-chips">
+        {(['7d', '14d', '30d', 'custom'] as const).map((p) => (
+          <button
+            key={p}
+            className={`chip${period === p ? ' active' : ''}`}
+            onClick={() => setPeriod(p)}
+          >
+            {p === '7d' ? '7 dias' : p === '14d' ? '14 dias' : p === '30d' ? '30 dias' : 'Personalizado'}
+          </button>
+        ))}
+      </div>
+      {period === 'custom' && (
+        <div className="dashboard-custom-dates">
+          <label>
+            <span>De</span>
+            <input
+              type="date"
+              value={customStart}
+              max={today}
+              onChange={(e) => setCustomStart(e.target.value)}
+            />
+          </label>
+          <label>
+            <span>Até</span>
+            <input
+              type="date"
+              value={customEnd}
+              max={today}
+              onChange={(e) => handleEndChange(e.target.value)}
+            />
+          </label>
+        </div>
+      )}
+      <div className="seg">
+        <button
+          className={`seg-btn${view === 'photowall' ? ' active' : ''}`}
+          onClick={() => setView('photowall')}
+        >
+          Parede de Fotos
+        </button>
+        <button
+          className={`seg-btn${view === 'timeline' ? ' active' : ''}`}
+          onClick={() => setView('timeline')}
+        >
+          Timeline
+        </button>
+      </div>
+      {isEmpty && <p className="dashboard-empty">Sem registros neste período.</p>}
+      {slots.length > 0 && !isEmpty && (
+        view === 'photowall'
+          ? <PhotoWallView slots={slots} />
+          : <TimelineView slots={slots} />
+      )}
     </div>
+  );
+}
+
+function PhotoWallView({ slots }: { slots: DashboardSlot[] }) {
+  return (
+    <div className="photowall-grid">
+      {slots.map((slot) =>
+        slot.status === 'loading'
+          ? <div key={slot.date} className="skeleton-cell" aria-hidden="true" />
+          : null
+      )}
+    </div>
+  );
+}
+
+function TimelineView({ slots }: { slots: DashboardSlot[] }) {
+  return (
+    <ul className="timeline-list">
+      {slots.map((slot) =>
+        slot.status === 'loading'
+          ? <li key={slot.date} className="skeleton-item" aria-hidden="true" />
+          : null
+      )}
+    </ul>
   );
 }
 

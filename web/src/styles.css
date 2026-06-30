@@ -522,3 +522,78 @@ button.link.danger { color: var(--danger); }
   resize: vertical;
 }
 .manual-actions { display: flex; align-items: center; gap: var(--space-2); }
+
+/* Story 3.1 — Dashboard (Painel de Padrões Alimentares) */
+.dashboard { padding: var(--space-4); }
+
+.period-chips { display: flex; gap: var(--space-2); margin-bottom: var(--space-3); flex-wrap: wrap; }
+
+.dashboard-custom-dates {
+  display: flex;
+  gap: var(--space-3);
+  align-items: center;
+  margin-bottom: var(--space-3);
+  flex-wrap: wrap;
+}
+.dashboard-custom-dates label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+.dashboard-custom-dates input[type='date'] {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-input);
+  padding: var(--space-1) var(--space-2);
+  font-size: 0.85rem;
+  background: var(--card);
+  color: var(--text);
+}
+
+.dashboard-empty {
+  text-align: center;
+  color: var(--muted);
+  padding: var(--space-6) 0;
+  font-size: 0.95rem;
+}
+
+@keyframes sk-shimmer {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 0.8; }
+}
+
+.skeleton-cell {
+  aspect-ratio: 1 / 1;
+  background: var(--border);
+  border-radius: var(--radius-card);
+  animation: sk-shimmer 1.4s ease-in-out infinite;
+}
+
+.skeleton-item {
+  height: 64px;
+  background: var(--border);
+  border-radius: var(--radius-card);
+  animation: sk-shimmer 1.4s ease-in-out infinite;
+}
+
+.photowall-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: var(--space-2);
+}
+@media (min-width: 481px) {
+  .photowall-grid { grid-template-columns: repeat(3, 1fr); }
+}
+@media (min-width: 1024px) {
+  .photowall-grid { grid-template-columns: repeat(4, 1fr); }
+}
+
+.timeline-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
