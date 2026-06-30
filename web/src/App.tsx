@@ -143,7 +143,7 @@ function textOn(hex: string): string {
   return lum > 0.6 ? '#111' : '#fff';
 }
 
-type Tab = 'review' | 'tags' | 'share' | 'audit' | 'report';
+type Tab = 'review' | 'dashboard' | 'tags' | 'share' | 'report' | 'audit';
 
 // Tag filter selection: a specific tag id, or the two synthetic options.
 type TagFilter = 'all' | 'none' | string;
@@ -157,10 +157,19 @@ export function App() {
   return <Shell onLogout={() => { clearToken(); setTokenState(null); }} />;
 }
 
-// Authenticated shell: tab bar switching between the daily review and the
-// request audit log. Both screens share the same Bearer token.
+// Authenticated shell: tab bar switching between the main views. Audit is
+// accessible via ?tab=audit query param or the footer link, not the main nav.
 function Shell({ onLogout }: { onLogout: () => void }) {
   const [tab, setTab] = useState<Tab>('review');
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('tab') === 'audit') {
+      setTab('audit');
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+  }, []);
+
   return (
     <div className="shell">
       <nav className="tabs">
@@ -169,6 +178,12 @@ function Shell({ onLogout }: { onLogout: () => void }) {
           onClick={() => setTab('review')}
         >
           Revisão
+        </button>
+        <button
+          className={tab === 'dashboard' ? 'tab active' : 'tab'}
+          onClick={() => setTab('dashboard')}
+        >
+          Painel
         </button>
         <button
           className={tab === 'tags' ? 'tab active' : 'tab'}
@@ -183,12 +198,6 @@ function Shell({ onLogout }: { onLogout: () => void }) {
           Compartilhar
         </button>
         <button
-          className={tab === 'audit' ? 'tab active' : 'tab'}
-          onClick={() => setTab('audit')}
-        >
-          Auditoria
-        </button>
-        <button
           className={tab === 'report' ? 'tab active' : 'tab'}
           onClick={() => setTab('report')}
         >
@@ -196,10 +205,28 @@ function Shell({ onLogout }: { onLogout: () => void }) {
         </button>
       </nav>
       {tab === 'review' && <Review onLogout={onLogout} />}
+      {tab === 'dashboard' && <Dashboard onLogout={onLogout} />}
       {tab === 'tags' && <TagsManager onLogout={onLogout} />}
       {tab === 'share' && <ShareManager onLogout={onLogout} />}
       {tab === 'audit' && <Audit onLogout={onLogout} />}
       {tab === 'report' && <WeeklyReportView onLogout={onLogout} />}
+      <footer style={{ textAlign: 'center', padding: 'var(--space-2)' }}>
+        <button
+          className="tab"
+          style={{ color: 'var(--muted)', fontSize: '0.8rem' }}
+          onClick={() => setTab('audit')}
+        >
+          Auditoria
+        </button>
+      </footer>
+    </div>
+  );
+}
+
+function Dashboard({ onLogout: _onLogout }: { onLogout: () => void }) {
+  return (
+    <div className="dashboard-stub">
+      <h1>Painel</h1>
     </div>
   );
 }

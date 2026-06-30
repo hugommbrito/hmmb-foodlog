@@ -155,3 +155,9 @@ Valores abaixo de `--space-1` (4px) e acima de `--space-6` (32px) que ficaram ha
 - **`48px` em `.empty`**: `padding: 48px var(--space-4)` — valor acima de `--space-6` (32px); exige adicionar `--space-12: 48px` ou similar à escala se padronizado.
 - **`2px` em `.search-date-label`**: `padding: 4px 0 2px` — o `4px` já é `--space-1` (corrigível trivialmente); o `2px` inferior é sub-grade.
 - **`3px` em `.cal-thumbs img`**: `border-radius: 3px` — entre `--radius-sm` (6px) e nenhum raio; valor cosmético pré-existente.
+
+## UX diferida — Story 2.1 Tab Bar (encontradas na revisão adversarial)
+
+- **Footer "Auditoria" sem active state**: quando `tab === 'audit'`, nenhum botão no nav nem no footer fica visualmente ativo — UX gap menor. O design intencional é que Audit seja discreta, mas o usuário não tem confirmação visual de onde está. Considerar adicionar indicador discreto ao footer button quando `tab === 'audit'` (ex.: `font-weight: 600`).
+- **Guard genérico para `?tab=` params**: a leitura de URL só aceita `'audit'`; outros valores são silenciosamente ignorados. Se o pattern de URL-driven tab init for expandido a outros tabs no futuro, adicionar validação contra o union `Tab` para evitar divergência entre código e URL.
+- **`Dashboard` stub descarta `onLogout`**: o prop `_onLogout` é tipado mas ignorado intencionalmente no stub. Quando o conteúdo real do Dashboard for implementado no Epic 3, garantir que auth failures (401) chamem `onLogout` — seguindo o padrão dos demais componentes.

@@ -109,7 +109,7 @@ input {
   border-radius: 0;
   padding: var(--space-2) var(--space-3);
 }
-.tab.active { color: var(--text); border-bottom-color: var(--text); font-weight: 600; }
+.tab.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
 
 /* Review screen */
 .review { max-width: 720px; margin: 0 auto; padding: var(--space-4); }
