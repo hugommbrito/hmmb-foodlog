@@ -797,12 +797,17 @@ function EntryCard({
 
   return (
     <li className={`card ${entry.reviewed ? 'reviewed' : ''}`}>
+      <div
+        className={`conf-border ${confClass(entry.ai_confidence_overall)}`}
+        aria-label={`Confiança da IA: ${entry.ai_confidence_overall.toFixed(2)}`}
+      />
       <div className="photos">
         {entry.photos.length > 0
           ? entry.photos.map((url, i) => (
               <img key={i} src={url} alt={`Foto ${i + 1}`} loading="lazy" />
             ))
-          : <div className="photo-placeholder" aria-hidden="true" />}
+          : <div className="photo-placeholder" role="img" aria-label="Sem foto" />}
+        {entry.reviewed && <span className="reviewed-check" aria-hidden="true">✓</span>}
       </div>
       <div className="card-body">
         <div className="card-head">
@@ -813,9 +818,6 @@ function EntryCard({
             </div>
             {totals && <div className="totals">{totals}</div>}
           </div>
-          <span className={`badge ${confClass(entry.ai_confidence_overall)}`}>
-            {pct(entry.ai_confidence_overall)}
-          </span>
         </div>
 
         {!editing ? (
