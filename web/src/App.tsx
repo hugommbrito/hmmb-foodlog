@@ -257,6 +257,38 @@ function TokenGate({ onSave }: { onSave: (token: string) => void }) {
   );
 }
 
+type HistoryDot = {
+  date: string;
+  status: 'loading' | 'empty' | 'reviewed' | 'pending';
+  total: number;
+  pending: number;
+};
+
+function sevenDaysBefore(dateStr: string): string[] {
+  return Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(dateStr + 'T12:00:00');
+    d.setDate(d.getDate() - (i + 1));
+    const y = d.getFullYear();
+    const mo = String(d.getMonth() + 1).padStart(2, '0');
+    const dy = String(d.getDate()).padStart(2, '0');
+    return `${y}-${mo}-${dy}`;
+  });
+}
+
+function dotAriaLabel(dot: HistoryDot): string {
+  const d = new Date(dot.date + 'T12:00:00');
+  const dayName = d.toLocaleDateString('pt-BR', { weekday: 'long' });
+  const day = String(d.getDate()).padStart(2, '0');
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const dmStr = `${day}/${month}`;
+  if (dot.status === 'loading') return `${dayName} ${dmStr}: carregando`;
+  if (dot.total === 0) return `${dayName} ${dmStr}: sem entradas`;
+  const entryWord = dot.total === 1 ? 'entrada' : 'entradas';
+  if (dot.pending === 0) return `${dayName} ${dmStr}: ${dot.total} ${entryWord}`;
+  const pendWord = dot.pending === 1 ? 'pendente de revisão' : 'pendentes de revisão';
+  return `${dayName} ${dmStr}: ${dot.total} ${entryWord}, ${dot.pending} ${pendWord}`;
+}
+
 function Review({ onLogout }: { onLogout: () => void }) {
   const [date, setDate] = useState<string>(todayLocal());
   const [entries, setEntries] = useState<EntryWithFoods[]>([]);
@@ -266,6 +298,7 @@ function Review({ onLogout }: { onLogout: () => void }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showManual, setShowManual] = useState(false);
+  const [historyDots, setHistoryDots] = useState<HistoryDot[]>([]);
 
   // CAP-8: food search across full history
   const [searchQuery, setSearchQuery] = useState('');
@@ -334,6 +367,39 @@ function Review({ onLogout }: { onLogout: () => void }) {
       clearTimeout(timer);
     };
   }, [searchQuery, onLogout]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const dates = sevenDaysBefore(date);
+    setHistoryDots(dates.map((d) => ({ date: d, status: 'loading', total: 0, pending: 0 })));
+    dates.forEach((d, idx) => {
+      fetchEntries(d)
+        .then((entries) => {
+          if (cancelled) return;
+          const pendingCount = entries.filter((e) => !e.reviewed).length;
+          const status: HistoryDot['status'] =
+            entries.length === 0 ? 'empty' : pendingCount > 0 ? 'pending' : 'reviewed';
+          setHistoryDots((prev) => {
+            const next = [...prev];
+            next[idx] = { date: d, status, total: entries.length, pending: pendingCount };
+            return next;
+          });
+        })
+        .catch((err) => {
+          if (cancelled) return;
+          if (err instanceof UnauthorizedError) {
+            onLogout();
+            return;
+          }
+          setHistoryDots((prev) => {
+            const next = [...prev];
+            next[idx] = { date: d, status: 'empty', total: 0, pending: 0 };
+            return next;
+          });
+        });
+    });
+    return () => { cancelled = true; };
+  }, [date, onLogout]);
 
   const handleAccept = useCallback(
     async (id: string) => {
@@ -627,7 +693,16 @@ function Review({ onLogout }: { onLogout: () => void }) {
                   )}
                 </div>
               )}
-              {/* Área reservada para os 7 pontos de histórico — Story 2.4 */}
+              <div className="day-history-dots">
+                {historyDots.map((dot) => (
+                  <button
+                    key={dot.date}
+                    className={`history-dot${dot.status === 'reviewed' ? ' reviewed' : dot.status === 'pending' ? ' pending' : dot.status === 'loading' ? ' loading' : ''}`}
+                    aria-label={dotAriaLabel(dot)}
+                    onClick={() => setDate(dot.date)}
+                  />
+                ))}
+              </div>
             </div>
           )}
 

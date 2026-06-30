@@ -9,6 +9,11 @@ Capacidades do SPEC-foodlog diferidas para implementação após a fundação (C
 - **Extração JSON do Claude**: abordagem `indexOf/lastIndexOf` pode falhar se Claude adicionar prosa com `}` após o JSON. Considerar brace-depth tracking em `src/services/ai.ts` se forem observadas falhas de parse em produção.
 - **Limite 5MB por imagem para Anthropic**: fotos grandes do R2 podem exceder o limite da API e queimar retries. Adicionar guard de tamanho em `fetchImageAsBase64` (`src/services/ai.ts`) se forem observados erros 400 da API.
 
+## Melhorias diferidas — Story 2.4 (encontradas na revisão)
+
+- **Filtros não resetam ao navegar por ponto de histórico**: clicar num ponto de histórico chama `setDate()` mas não reseta `tagFilter` nem `sortDir`. Um usuário com filtro de tag ativo pode ver lista aparentemente vazia no dia destino. Decidir se navegar por ponto deve limpar filtros (mesma questão existe no date picker).
+- **`sevenDaysBefore` sem guard para `dateStr` inválido**: se `todayLocal()` produzir string malformada, `new Date('' + 'T12:00:00')` resulta em `Invalid Date` e `d.toISOString()` lança `RangeError`. Low risk em produção, mas sem error boundary o efeito falha silenciosamente deixando `historyDots` vazio.
+
 ## Melhorias técnicas diferidas — CAP-1 REST endpoint (encontradas na revisão)
 
 - **Hashing do `api_token`**: hoje o token é armazenado em plaintext em `users.api_token` e comparado verbatim (`src/routes/entries.ts`). Aceitável para uso pessoal, mas um vazamento de DB expõe a credencial. Considerar armazenar SHA-256 do token e comparar pelo hash quando houver mais de um usuário/uso externo.
