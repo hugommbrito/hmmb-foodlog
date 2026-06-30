@@ -123,21 +123,35 @@ header { position: sticky; top: 0; background: var(--bg); padding-bottom: var(--
 .banner.error { background: var(--surface-danger); color: var(--danger); }
 .empty { padding: 48px var(--space-4); text-align: center; color: var(--muted); }
 
-/* Day summary bar: aggregated macros for the visible (filtered) entries. */
+/* Mini-resumo: total de macros do dia, sempre visível (não filtrado por tag). */
 .day-summary {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
   flex-wrap: wrap;
   gap: var(--space-2);
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: var(--radius-card);
-  padding: var(--space-3) var(--space-4);
+  padding: var(--space-2) var(--space-4);
   margin-bottom: var(--space-4);
 }
+.day-summary-macros {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+}
+.macro-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+}
+.macro-label { font-size: 0.8rem; color: var(--muted); }
+.macro-value { font-size: 0.95rem; }
+.day-summary-empty { font-size: 0.95rem; color: var(--muted); }
 .day-summary-count { font-size: 0.85rem; color: var(--muted); }
-.day-summary-totals { font-weight: 600; font-size: 1rem; }
 
 .cards { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: var(--space-4); }
 

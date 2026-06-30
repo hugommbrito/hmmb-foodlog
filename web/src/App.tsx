@@ -461,9 +461,17 @@ function Review({ onLogout }: { onLogout: () => void }) {
     return sortByCreated(filtered, sortDir);
   }, [entries, tagFilter, sortDir]);
 
-  // Day summary reflects the active tag filter: it aggregates the visible entries,
-  // not all of them. Null when nothing showable so the bar can be skipped.
-  const summary = useMemo(() => dayTotals(visible), [visible]);
+  // Mini-resumo: aggregate all entries for the day (not filtered by tag).
+  const dayFoods = useMemo(() => entries.flatMap((e) => e.foods), [entries]);
+  const [dayKcal, dayProtein, dayCarbs, dayFat] = useMemo(
+    () => [
+      sumMacros(dayFoods, 'kcal'),
+      sumMacros(dayFoods, 'protein_g'),
+      sumMacros(dayFoods, 'carbs_g'),
+      sumMacros(dayFoods, 'fat_g'),
+    ],
+    [dayFoods]
+  );
 
   return (
     <div className="review">
@@ -587,12 +595,39 @@ function Review({ onLogout }: { onLogout: () => void }) {
             <div className="empty">Nenhuma entrada para este filtro.</div>
           )}
 
-          {!loading && !error && visible.length > 0 && (
+          {!loading && !error && (
             <div className="day-summary">
-              <span className="day-summary-count">
-                {visible.length} {visible.length === 1 ? 'entrada' : 'entradas'}
-              </span>
-              {summary && <span className="day-summary-totals">{summary}</span>}
+              {entries.length === 0 ? (
+                <span className="day-summary-empty">Sem registros neste dia.</span>
+              ) : (
+                <div className="day-summary-macros">
+                  {dayKcal != null && (
+                    <span className="macro-item">
+                      <span className="macro-label">kcal</span>
+                      <span className="macro-value">{Math.round(dayKcal)}</span>
+                    </span>
+                  )}
+                  {dayProtein != null && (
+                    <span className="macro-item">
+                      <span className="macro-label">P</span>
+                      <span className="macro-value">{Math.round(dayProtein)}g</span>
+                    </span>
+                  )}
+                  {dayCarbs != null && (
+                    <span className="macro-item">
+                      <span className="macro-label">C</span>
+                      <span className="macro-value">{Math.round(dayCarbs)}g</span>
+                    </span>
+                  )}
+                  {dayFat != null && (
+                    <span className="macro-item">
+                      <span className="macro-label">G</span>
+                      <span className="macro-value">{Math.round(dayFat)}g</span>
+                    </span>
+                  )}
+                </div>
+              )}
+              {/* Área reservada para os 7 pontos de histórico — Story 2.4 */}
             </div>
           )}
 
