@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   acceptEntry,
   clearToken,
@@ -364,13 +364,111 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
 }
 
 function PhotoWallView({ slots }: { slots: DashboardSlot[] }) {
+  const [modalEntry, setModalEntry] = useState<EntryWithFoods | null>(null);
   return (
-    <div className="photowall-grid">
-      {slots.map((slot) =>
-        slot.status === 'loading'
-          ? <div key={slot.date} className="skeleton-cell" aria-hidden="true" />
-          : null
-      )}
+    <>
+      <div className="photowall-grid">
+        {[...slots].reverse().map((slot) => {
+          if (slot.status === 'loading') {
+            return <div key={slot.date} className="skeleton-cell" aria-hidden="true" />;
+          }
+          if (slot.status !== 'done') return null;
+          return slot.entries
+            .slice()
+            .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+            .map((e) => {
+              const time = new Date(e.created_at).toLocaleTimeString('pt-BR', {
+                hour: '2-digit',
+                minute: '2-digit',
+              });
+              const k = sumMacros(e.foods, 'kcal');
+              const kcalLabel = k != null ? `${Math.round(k)} kcal` : '–';
+              return (
+                <button key={e.id} className="photowall-cell" onClick={() => setModalEntry(e)}>
+                  {e.photos.length > 0
+                    ? <img src={e.photos[0]} loading="lazy" alt={e.title ?? 'Foto da refeição'} />
+                    : <div className="photowall-cell-ph" role="img" aria-label="Sem foto" />
+                  }
+                  <div className="photowall-scrim" aria-hidden="true" />
+                  <span className="photowall-time">{time}</span>
+                  <span className="photowall-kcal">{kcalLabel}</span>
+                </button>
+              );
+            });
+        })}
+      </div>
+      {modalEntry && <PhotoWallModal entry={modalEntry} onClose={() => setModalEntry(null)} />}
+    </>
+  );
+}
+
+function PhotoWallModal({ entry, onClose }: { entry: EntryWithFoods; onClose: () => void }) {
+  const sheetRef = useRef<HTMLDivElement>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+
+  useEffect(() => {
+    const sheet = sheetRef.current;
+    if (!sheet) return;
+
+    const focusable = Array.from(
+      sheet.querySelectorAll<HTMLElement>('button, [href], input, [tabindex]:not([tabindex="-1"])')
+    );
+    focusable[0]?.focus();
+
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') {
+        onCloseRef.current();
+        return;
+      }
+      if (e.key === 'Tab') {
+        if (focusable.length === 0) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (e.shiftKey) {
+          if (document.activeElement === first) {
+            e.preventDefault();
+            last.focus();
+          }
+        } else {
+          if (document.activeElement === last) {
+            e.preventDefault();
+            first.focus();
+          }
+        }
+      }
+    }
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
+  return (
+    <div className="pw-modal-backdrop" onClick={onClose}>
+      <div
+        ref={sheetRef}
+        className="pw-modal-sheet"
+        role="dialog"
+        aria-modal="true"
+        aria-label={entry.title ?? 'Detalhe da refeição'}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="pw-modal-top">
+          <button className="pw-modal-close" aria-label="Fechar" onClick={onClose}>✕</button>
+          {entry.photos.length > 0
+            ? <img className="pw-modal-photo" src={entry.photos[0]} alt={entry.title ?? 'Foto da refeição'} />
+            : <div className="pw-modal-photo pw-modal-ph" role="img" aria-label="Sem foto" />
+          }
+        </div>
+        <ul className="pw-modal-foods">
+          {entry.foods.map((f) => (
+            <li key={f.id}>
+              <span>{f.description}{f.quantity ? ` (${f.quantity})` : ''}</span>
+              <span>{f.kcal != null ? `${Math.round(f.kcal)} kcal` : '–'}</span>
+            </li>
+          ))}
+        </ul>
+      </div>
     </div>
   );
 }

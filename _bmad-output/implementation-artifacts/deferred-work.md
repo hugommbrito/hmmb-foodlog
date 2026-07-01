@@ -1,5 +1,11 @@
 # Deferred Work
 
+## Story 3.2 — Vista Parede de Fotos (encontrado na revisão)
+
+- **Focus return após fechar modal**: ao fechar `PhotoWallModal`, o foco retorna para `document.body` em vez do botão de célula que abriu o modal. Impacta usuários de teclado/leitores de tela. Correto seria salvar `document.activeElement` antes de abrir e restaurar no `onClose`.
+
+
+
 Capacidades do SPEC-foodlog diferidas para implementação após a fundação (CAP-10 + CAP-1 + CAP-2).
 
 ## Melhorias técnicas diferidas — Spec B (encontradas na revisão)
