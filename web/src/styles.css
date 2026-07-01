@@ -664,6 +664,7 @@ button.link.danger { color: var(--danger); }
   position: absolute;
   top: var(--space-1);
   right: var(--space-1);
+  z-index: 1;
   color: #fff;
   font-size: 0.8rem;
   pointer-events: none;
@@ -673,10 +674,45 @@ button.link.danger { color: var(--danger); }
   position: absolute;
   bottom: var(--space-1);
   left: var(--space-1);
+  z-index: 1;
   color: #fff;
   font-size: 0.8rem;
   pointer-events: none;
   text-shadow: 0 1px 2px rgba(0, 0, 0, .6);
+}
+
+/* Photo wall cell — extra photos strip */
+.photowall-extra-strip {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  background: rgba(0, 0, 0, .45);
+  pointer-events: none;
+}
+.photowall-extra-strip img {
+  flex: 1;
+  width: 0;
+  height: 28px;
+  object-fit: cover;
+  border-radius: 2px;
+  display: block;
+}
+.photowall-extra-badge {
+  flex: 1;
+  width: 0;
+  height: 28px;
+  background: rgba(0, 0, 0, .5);
+  color: #fff;
+  font-size: 0.72rem;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 2px;
 }
 
 /* Photo wall modal */
@@ -736,6 +772,22 @@ button.link.danger { color: var(--danger); }
   height: 200px;
   background: var(--border);
 }
+.pw-modal-strip {
+  display: flex;
+  overflow-x: auto;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  background: var(--bg);
+  scrollbar-width: thin;
+}
+.pw-modal-strip img {
+  height: 260px;
+  width: auto;
+  flex-shrink: 0;
+  object-fit: cover;
+  display: block;
+  border-radius: var(--radius-sm);
+}
 .pw-modal-foods {
   list-style: none;
   padding: var(--space-4);
@@ -789,12 +841,26 @@ button.link.danger { color: var(--danger); }
   background: var(--border);
 }
 .tl-thumb-wrap {
+  position: relative;
   width: 64px;
   height: 64px;
   flex: none;
   border-radius: var(--radius-sm);
   overflow: hidden;
   display: block;
+}
+.tl-multi-badge {
+  position: absolute;
+  bottom: 4px;
+  right: 4px;
+  background: rgba(0, 0, 0, .55);
+  color: #fff;
+  font-size: 0.7rem;
+  font-weight: 600;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 3px;
+  pointer-events: none;
 }
 .tl-thumb-wrap .tl-thumb {
   width: 100%;

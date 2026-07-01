@@ -390,6 +390,8 @@ function PhotoWallView({ slots }: { slots: DashboardSlot[] }) {
               });
               const k = sumMacros(e.foods, 'kcal');
               const kcalLabel = k != null ? `${Math.round(k)} kcal` : '–';
+              const extraPhotos = e.photos.slice(1, 3);
+              const extraOverflow = e.photos.length > 3 ? e.photos.length - 3 : 0;
               return (
                 <button key={e.id} className="photowall-cell" onClick={() => setModalEntry(e)}>
                   {e.photos.length > 0
@@ -399,6 +401,16 @@ function PhotoWallView({ slots }: { slots: DashboardSlot[] }) {
                   <div className="photowall-scrim" aria-hidden="true" />
                   <span className="photowall-time">{time}</span>
                   <span className="photowall-kcal">{kcalLabel}</span>
+                  {extraPhotos.length > 0 && (
+                    <div className="photowall-extra-strip" aria-hidden="true">
+                      {extraPhotos.map((url, i) => (
+                        <img key={i} src={url} alt="" loading="lazy" />
+                      ))}
+                      {extraOverflow > 0 && (
+                        <span className="photowall-extra-badge">+{extraOverflow}</span>
+                      )}
+                    </div>
+                  )}
                 </button>
               );
             });
@@ -462,9 +474,17 @@ function PhotoWallModal({ entry, onClose }: { entry: EntryWithFoods; onClose: ()
       >
         <div className="pw-modal-top">
           <button className="pw-modal-close" aria-label="Fechar" onClick={onClose}>✕</button>
-          {entry.photos.length > 0
-            ? <img className="pw-modal-photo" src={entry.photos[0]} alt={entry.title ?? 'Foto da refeição'} />
-            : <div className="pw-modal-photo pw-modal-ph" role="img" aria-label="Sem foto" />
+          {entry.photos.length > 1
+            ? (
+              <div className="pw-modal-strip">
+                {entry.photos.map((url, i) => (
+                  <img key={i} src={url} alt={i === 0 ? (entry.title ?? 'Foto da refeição') : ''} loading="lazy" />
+                ))}
+              </div>
+            )
+            : entry.photos.length === 1
+              ? <img className="pw-modal-photo" src={entry.photos[0]} alt={entry.title ?? 'Foto da refeição'} loading="lazy" />
+              : <div className="pw-modal-photo pw-modal-ph" role="img" aria-label="Sem foto" />
           }
         </div>
         <ul className="pw-modal-foods">
@@ -526,6 +546,9 @@ function TimelineView({ slots, tags }: { slots: DashboardSlot[]; tags: ContextTa
                         alt={e.title ?? 'Foto da refeição'}
                         loading="lazy"
                       />
+                      {e.photos.length > 1 && (
+                        <span className="tl-multi-badge" aria-hidden="true">+{e.photos.length - 1}</span>
+                      )}
                     </div>
                   ) : (
                     <div className="tl-thumb tl-thumb-ph" role="img" aria-label="Sem foto" />

@@ -189,3 +189,19 @@ Valores abaixo de `--space-1` (4px) e acima de `--space-6` (32px) que ficaram ha
 - **Footer "Auditoria" sem active state**: quando `tab === 'audit'`, nenhum botão no nav nem no footer fica visualmente ativo — UX gap menor. O design intencional é que Audit seja discreta, mas o usuário não tem confirmação visual de onde está. Considerar adicionar indicador discreto ao footer button quando `tab === 'audit'` (ex.: `font-weight: 600`).
 - **Guard genérico para `?tab=` params**: a leitura de URL só aceita `'audit'`; outros valores são silenciosamente ignorados. Se o pattern de URL-driven tab init for expandido a outros tabs no futuro, adicionar validação contra o union `Tab` para evitar divergência entre código e URL.
 - **`Dashboard` stub descarta `onLogout`**: o prop `_onLogout` é tipado mas ignorado intencionalmente no stub. Quando o conteúdo real do Dashboard for implementado no Epic 3, garantir que auth failures (401) chamem `onLogout` — seguindo o padrão dos demais componentes.
+
+## SPEC vista-unificada — CAP-2 e CAP-3 (diferidos de SPEC-vista-unificada-fotos-modos-modal-dia)
+
+Diferidos em 2026-07-01 por escolha do usuário (split de escopo). CAP-1 é o primeiro goal a ser implementado via `spec-fotos-multiplas-indicativo.md`.
+
+### CAP-2 — Modos de exibição cruzados
+
+Adicionar "Parede de Fotos" e "Timeline" ao Share (aceitando `SharedEntry[]`, sem badge de confiança/revisão/tag). Adicionar "Calendário" e "Lista" ao Painel (reusando `slots: DashboardSlot[]`, sem nova chamada de API). Extrair `monthCells`, `monthsBetween`, `monthLabel` de `Share.tsx` para módulo utilitário compartilhado. Ver `view-modes-matrix.md` para tabela de componentes e fontes de dados.
+
+**Companham o spec original:** `_bmad-output/specs/spec-vista-unificada-fotos-modos-modal-dia/SPEC.md` + `view-modes-matrix.md`
+
+### CAP-3 — Modal de dia no Calendário
+
+Ao clicar em célula de dia com ≥ 1 entrada no `CalendarView` (Share) ou `DashboardCalendarView` (Painel), abrir modal somente leitura com entradas do dia: fotos, título, hora e macros. Esc e backdrop fecham. Células vazias ou fora do período não respondem. Nenhuma ação de edição dentro do modal. Depende de CAP-2 para o lado do Painel (`DashboardCalendarView`).
+
+**Companham o spec original:** `_bmad-output/specs/spec-vista-unificada-fotos-modos-modal-dia/SPEC.md` + `view-modes-matrix.md`
