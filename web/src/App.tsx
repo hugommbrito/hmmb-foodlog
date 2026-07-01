@@ -32,6 +32,7 @@ import type {
   ShareLink,
   WeeklyReportPayload,
 } from './types';
+import { monthsBetween, monthCells, monthLabel } from './calendarUtils';
 
 // YYYY-MM-DD for "today", pinned to the same timezone the backend filters on
 // (America/Sao_Paulo) so the default day matches regardless of the device tz.
@@ -225,7 +226,8 @@ function Shell({ onLogout }: { onLogout: () => void }) {
 
 type DashboardSlot = { date: string; status: 'loading' | 'done' | 'error'; entries: EntryWithFoods[] };
 type DashboardPeriod = '7d' | '14d' | '30d' | 'custom';
-type DashboardView = 'photowall' | 'timeline';
+type DashboardView = 'photowall' | 'timeline' | 'calendar' | 'list';
+export type DayEntry = { id: string; created_at: string; photos: string[]; title: string | null; foods: FoodItem[] };
 
 function addDaysToDate(dateStr: string, days: number): string {
   const d = new Date(dateStr + 'T12:00:00');
@@ -359,12 +361,28 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
         >
           Timeline
         </button>
+        <button
+          className={`seg-btn${view === 'calendar' ? ' active' : ''}`}
+          onClick={() => setView('calendar')}
+        >
+          Calendário
+        </button>
+        <button
+          className={`seg-btn${view === 'list' ? ' active' : ''}`}
+          onClick={() => setView('list')}
+        >
+          Lista
+        </button>
       </div>
       {isEmpty && <p className="dashboard-empty">Sem registros neste período.</p>}
       {slots.length > 0 && !isEmpty && (
         view === 'photowall'
           ? <PhotoWallView slots={slots} />
-          : <TimelineView slots={slots} tags={tags} />
+          : view === 'timeline'
+            ? <TimelineView slots={slots} tags={tags} />
+            : view === 'calendar'
+              ? <DashboardCalendarView slots={slots} />
+              : <DashboardListView slots={slots} />
       )}
     </div>
   );
@@ -500,6 +518,77 @@ function PhotoWallModal({ entry, onClose }: { entry: EntryWithFoods; onClose: ()
   );
 }
 
+export function DayModal({ entries, onClose }: { entries: DayEntry[]; onClose: () => void }) {
+  const sheetRef = useRef<HTMLDivElement>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+
+  useEffect(() => {
+    const sheet = sheetRef.current;
+    if (!sheet) return;
+    const focusable = Array.from(
+      sheet.querySelectorAll<HTMLElement>('button, [href], input, [tabindex]:not([tabindex="-1"])')
+    );
+    focusable[0]?.focus();
+
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') { onCloseRef.current(); return; }
+      if (e.key === 'Tab') {
+        if (focusable.length === 0) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (e.shiftKey) {
+          if (document.activeElement === first) { e.preventDefault(); last.focus(); }
+        } else {
+          if (document.activeElement === last) { e.preventDefault(); first.focus(); }
+        }
+      }
+    }
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
+  return (
+    <div className="pw-modal-backdrop" onClick={onClose}>
+      <div
+        ref={sheetRef}
+        className="pw-modal-sheet day-modal-sheet"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Entradas do dia"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="day-modal-header">
+          <button className="pw-modal-close" aria-label="Fechar" onClick={onClose}>✕</button>
+        </div>
+        <ul className="day-modal-list">
+          {entries.map((entry) => {
+            const time = new Date(entry.created_at).toLocaleTimeString('pt-BR', {
+              timeZone: 'America/Sao_Paulo',
+              hour: '2-digit',
+              minute: '2-digit',
+            });
+            const macros = mealTotals(entry.foods);
+            return (
+              <li key={entry.id} className="day-modal-entry">
+                {entry.photos.length > 0
+                  ? <img className="day-modal-thumb" src={entry.photos[0]} alt={entry.title ?? 'Foto'} loading="lazy" />
+                  : <div className="day-modal-thumb day-modal-thumb-ph" />
+                }
+                <div className="day-modal-info">
+                  <span className="day-modal-time">{time}</span>
+                  <strong className="day-modal-title">{entry.title ?? 'Sem título'}</strong>
+                  {macros && <span className="day-modal-macros">{macros}</span>}
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
 function TimelineView({ slots, tags }: { slots: DashboardSlot[]; tags: ContextTag[] }) {
   const WEEKDAYS = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
   const tagsById = new Map(tags.map((t) => [t.id, t]));
@@ -575,6 +664,132 @@ function TimelineView({ slots, tags }: { slots: DashboardSlot[]; tags: ContextTa
         );
       })}
     </ul>
+  );
+}
+
+function fmtDateBR(d: string): string {
+  const [y, m, day] = d.split('-');
+  return `${day}/${m}/${y}`;
+}
+
+const CAL_WEEKDAYS = ['D', 'S', 'T', 'Q', 'Q', 'S', 'S'];
+
+function DashboardCalendarView({ slots }: { slots: DashboardSlot[] }) {
+  const [dayModal, setDayModal] = useState<DayEntry[] | null>(null);
+
+  const byDay = useMemo(() => {
+    const done = new Map<string, EntryWithFoods[]>();
+    const loading = new Set<string>();
+    for (const slot of slots) {
+      if (slot.status === 'done' && slot.entries.length > 0) done.set(slot.date, slot.entries);
+      else if (slot.status === 'loading') loading.add(slot.date);
+    }
+    return { done, loading };
+  }, [slots]);
+
+  const start = slots[0]?.date ?? todayLocal();
+  const end = slots[slots.length - 1]?.date ?? todayLocal();
+  const months = useMemo(() => monthsBetween(start, end), [start, end]);
+
+  return (
+    <>
+      <div className="cal-wrap">
+        {months.map(({ y, m }) => (
+          <div className="cal-month" key={`${y}-${m}`}>
+            <h2 className="cal-title">{monthLabel(y, m)}</h2>
+            <div className="cal-grid">
+              {CAL_WEEKDAYS.map((w, i) => (
+                <div className="cal-weekday" key={i}>{w}</div>
+              ))}
+              {monthCells(y, m).map((day, i) => {
+                if (day === null) {
+                  return <div className="cal-cell empty" key={`b${i}`} />;
+                }
+                const inRange = day >= start && day <= end;
+                const isLoading = inRange && byDay.loading.has(day);
+                const dayEntries = byDay.done.get(day) ?? [];
+                const thumbs = dayEntries.map((e) => e.photos[0]).filter(Boolean).slice(0, 3);
+                const overflow = dayEntries.length - thumbs.length;
+                const hasEntriesNoPhoto = inRange && dayEntries.length > 0 && thumbs.length === 0;
+                const clickable = inRange && dayEntries.length > 0;
+                const cls = `cal-cell${inRange ? '' : ' out'}${isLoading ? ' cal-cell-loading' : ''}`;
+                const inner = (
+                  <>
+                    <span className="cal-day">{Number(day.slice(8))}</span>
+                    {thumbs.length > 0 && (
+                      <div className="cal-thumbs">
+                        {thumbs.map((url, j) => <img key={j} src={url} alt="" loading="lazy" />)}
+                        {overflow > 0 && <span className="cal-more">+{overflow}</span>}
+                      </div>
+                    )}
+                    {hasEntriesNoPhoto && <div className="cal-dot" aria-label="Tem entradas sem foto" />}
+                  </>
+                );
+                return clickable
+                  ? <button className={cls} key={day} onClick={() => setDayModal(dayEntries)}>{inner}</button>
+                  : <div className={cls} key={day}>{inner}</div>;
+              })}
+            </div>
+          </div>
+        ))}
+      </div>
+      {dayModal && <DayModal entries={dayModal} onClose={() => setDayModal(null)} />}
+    </>
+  );
+}
+
+function DashboardListView({ slots }: { slots: DashboardSlot[] }) {
+  return (
+    <div className="shared-list">
+      {[...slots].reverse().map((slot) => {
+        if (slot.status === 'loading') {
+          return <div key={slot.date} className="skeleton-item" aria-hidden="true" />;
+        }
+        if (slot.status !== 'done' || slot.entries.length === 0) return null;
+        const sorted = slot.entries
+          .slice()
+          .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+        const dayTotalsStr = dayTotals(sorted);
+        return (
+          <section className="shared-day" key={slot.date}>
+            <div className="shared-day-head">
+              <h2>{fmtDateBR(slot.date)}</h2>
+              {dayTotalsStr && <span className="totals">{dayTotalsStr}</span>}
+            </div>
+            <ul className="tl-list">
+              {sorted.map((entry) => {
+                const time = new Date(entry.created_at).toLocaleTimeString('pt-BR', {
+                  timeZone: 'America/Sao_Paulo',
+                  hour: '2-digit',
+                  minute: '2-digit',
+                });
+                const macros = mealTotals(entry.foods);
+                return (
+                  <li key={entry.id} className="tl-item">
+                    {entry.photos.length > 0
+                      ? <div className="tl-thumb-wrap">
+                          <img className="tl-thumb" src={entry.photos[0]} alt={entry.title ?? 'Foto'} loading="lazy" />
+                          {entry.photos.length > 1 && (
+                            <span className="tl-multi-badge" aria-hidden="true">+{entry.photos.length - 1}</span>
+                          )}
+                        </div>
+                      : <div className="tl-thumb tl-thumb-ph" role="img" aria-label="Sem foto" />
+                    }
+                    <div className="tl-body">
+                      <span className="tl-time">{time}</span>
+                      <div className="tl-title-row">
+                        <span className="tl-title">{entry.title ?? '—'}</span>
+                      </div>
+                      {macros && <div className="tl-macros">{macros}</div>}
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          </section>
+        );
+      })}
+    </div>
   );
 }
 

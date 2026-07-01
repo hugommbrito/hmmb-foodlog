@@ -901,3 +901,60 @@ button.link.danger { color: var(--danger); }
 .tl-tag {
   flex: none;
 }
+.tl-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: var(--space-2); }
+
+/* Calendário — célula clicável */
+.cal-cell-loading { animation: sk-shimmer 1.4s ease-in-out infinite; }
+button.cal-cell {
+  appearance: none;
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+button.cal-cell:hover {
+  border-color: var(--accent);
+}
+
+/* DayModal — modal de dia (leitura apenas) */
+.day-modal-sheet { max-width: 520px; }
+.day-modal-header {
+  position: relative;
+  height: 40px;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border);
+}
+.day-modal-list {
+  list-style: none;
+  padding: var(--space-3) var(--space-4);
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  overflow-y: auto;
+  flex: 1;
+}
+.day-modal-entry {
+  display: flex;
+  gap: var(--space-3);
+  align-items: flex-start;
+}
+.day-modal-thumb {
+  width: 72px;
+  height: 72px;
+  object-fit: cover;
+  border-radius: var(--radius-sm);
+  flex-shrink: 0;
+  display: block;
+}
+.day-modal-thumb-ph {
+  background: var(--border);
+}
+.day-modal-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.day-modal-time { font-size: 0.78rem; color: var(--muted); }
+.day-modal-title { font-size: 0.95rem; font-weight: 600; color: var(--text); }
+.day-modal-macros { font-size: 0.8rem; color: var(--muted); }

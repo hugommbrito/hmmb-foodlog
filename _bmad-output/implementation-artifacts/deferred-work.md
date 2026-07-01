@@ -190,18 +190,12 @@ Valores abaixo de `--space-1` (4px) e acima de `--space-6` (32px) que ficaram ha
 - **Guard genérico para `?tab=` params**: a leitura de URL só aceita `'audit'`; outros valores são silenciosamente ignorados. Se o pattern de URL-driven tab init for expandido a outros tabs no futuro, adicionar validação contra o union `Tab` para evitar divergência entre código e URL.
 - **`Dashboard` stub descarta `onLogout`**: o prop `_onLogout` é tipado mas ignorado intencionalmente no stub. Quando o conteúdo real do Dashboard for implementado no Epic 3, garantir que auth failures (401) chamem `onLogout` — seguindo o padrão dos demais componentes.
 
-## SPEC vista-unificada — CAP-2 e CAP-3 (diferidos de SPEC-vista-unificada-fotos-modos-modal-dia)
+## Melhorias técnicas diferidas — spec-vista-unificada-modos-cruzados-modal-dia (encontradas na revisão)
 
-Diferidos em 2026-07-01 por escolha do usuário (split de escopo). CAP-1 é o primeiro goal a ser implementado via `spec-fotos-multiplas-indicativo.md`.
+Entregue em 2026-07-01 (CAP-2 + CAP-3 completos). Itens abaixo aceitos conscientemente.
 
-### CAP-2 — Modos de exibição cruzados
-
-Adicionar "Parede de Fotos" e "Timeline" ao Share (aceitando `SharedEntry[]`, sem badge de confiança/revisão/tag). Adicionar "Calendário" e "Lista" ao Painel (reusando `slots: DashboardSlot[]`, sem nova chamada de API). Extrair `monthCells`, `monthsBetween`, `monthLabel` de `Share.tsx` para módulo utilitário compartilhado. Ver `view-modes-matrix.md` para tabela de componentes e fontes de dados.
-
-**Companham o spec original:** `_bmad-output/specs/spec-vista-unificada-fotos-modos-modal-dia/SPEC.md` + `view-modes-matrix.md`
-
-### CAP-3 — Modal de dia no Calendário
-
-Ao clicar em célula de dia com ≥ 1 entrada no `CalendarView` (Share) ou `DashboardCalendarView` (Painel), abrir modal somente leitura com entradas do dia: fotos, título, hora e macros. Esc e backdrop fecham. Células vazias ou fora do período não respondem. Nenhuma ação de edição dentro do modal. Depende de CAP-2 para o lado do Painel (`DashboardCalendarView`).
-
-**Companham o spec original:** `_bmad-output/specs/spec-vista-unificada-fotos-modos-modal-dia/SPEC.md` + `view-modes-matrix.md`
+- **DayModal stale ao trocar período no Painel**: se o usuário abrir `DayModal` em `DashboardCalendarView` e depois trocar o período (7d/30d/90d) sem fechar, o modal permanece aberto com os dados do período anterior. Mitigação: `useEffect(() => { setDayModal(null); }, [slots])` em `DashboardCalendarView` — dispararia também ao carregar slots incrementalmente (loading→done), o que pode fechar o modal prematuramente; avaliar se monitorar um `periodKey` derivado de `slots[0]?.date` é mais apropriado.
+- **`start`/`end` em `DashboardCalendarView` não memoizados**: `start = slots[0]?.date ?? todayLocal()` e `end = slots[slots.length - 1]?.date ?? todayLocal()` são recalculados a cada render (linha ~690 de `App.tsx`). Como `monthsBetween` já é memoizado com `[start, end]`, o custo é marginal em uso pessoal; extrair ambos para o mesmo `useMemo` se o componente ganhar re-renders frequentes.
+- **`fmtDateBR` duplicada**: a função está definida em `App.tsx` (~linha 670) e novamente em `Share.tsx`. Mover para `calendarUtils.ts` na próxima oportunidade de limpeza.
+- **`DayModal` — array de focáveis obsoleto**: o mesmo padrão pré-existente do `PhotoWallModal` — `querySelectorAll` é chamado uma vez no `useEffect` de montagem; se o conteúdo mudar (raro aqui, pois a lista é estática), o array de foco fica desatualizado. Mitigação futura: derivar focáveis dinamicamente dentro do keydown handler.
+- **`isEmpty` no Painel trata todos-`error` como estado vazio**: a guarda `isEmpty` (`App.tsx`) ignora slots com `status: 'error'` — se todos os slots falharem, a UI mostra "sem entradas" em vez de mensagem de erro. Issue pré-existente, não introduzida nesta entrega.

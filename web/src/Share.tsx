@@ -1,16 +1,14 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { fetchShared, fetchSharedPatterns, ShareExpiredError, ShareInvalidError } from './api';
-import { FoodRow, mealTotals } from './App';
+import { DayModal, FoodRow, mealTotals } from './App';
+import type { DayEntry } from './App';
 import type { PatternsPayload, SharedEntry, SharedPayload } from './types';
+import { monthsBetween, monthCells, monthLabel } from './calendarUtils';
 
 // Local day key in the same timezone the backend filters on, so grouping matches
 // the period boundaries exactly.
 function spDate(iso: string): string {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo' }).format(new Date(iso));
-}
-
-function pad2(n: number): string {
-  return String(n).padStart(2, '0');
 }
 
 function fmtDateBR(d: string): string {
@@ -28,49 +26,7 @@ function spTime(iso: string): string {
 
 const WEEKDAYS = ['D', 'S', 'T', 'Q', 'Q', 'S', 'S'];
 
-// Months (inclusive) spanning [start, end], each as {y, m} (m is 1-based).
-function monthsBetween(start: string, end: string): { y: number; m: number }[] {
-  const [sy, sm] = start.split('-').map(Number);
-  const [ey, em] = end.split('-').map(Number);
-  const out: { y: number; m: number }[] = [];
-  let y = sy;
-  let m = sm;
-  while (y < ey || (y === ey && m <= em)) {
-    out.push({ y, m });
-    m += 1;
-    if (m > 12) {
-      m = 1;
-      y += 1;
-    }
-  }
-  return out;
-}
-
-// Calendar cells for a month: leading nulls to align day 1 to its weekday, then
-// one 'YYYY-MM-DD' per day. UTC math avoids local-tz drift in the grid layout.
-function monthCells(y: number, m: number): (string | null)[] {
-  const firstWeekday = new Date(Date.UTC(y, m - 1, 1)).getUTCDay();
-  const daysInMonth = new Date(Date.UTC(y, m, 0)).getUTCDate();
-  const cells: (string | null)[] = [];
-  for (let i = 0; i < firstWeekday; i += 1) {
-    cells.push(null);
-  }
-  for (let d = 1; d <= daysInMonth; d += 1) {
-    cells.push(`${y}-${pad2(m)}-${pad2(d)}`);
-  }
-  return cells;
-}
-
-function monthLabel(y: number, m: number): string {
-  const label = new Date(Date.UTC(y, m - 1, 1)).toLocaleDateString('pt-BR', {
-    month: 'long',
-    year: 'numeric',
-    timeZone: 'UTC',
-  });
-  return label.charAt(0).toUpperCase() + label.slice(1);
-}
-
-type View = 'calendar' | 'list' | 'patterns';
+type View = 'calendar' | 'list' | 'patterns' | 'photowall' | 'timeline';
 type PatternsStatus = 'idle' | 'loading' | 'ok' | 'error' | 'gone';
 
 export function PublicShare({ token }: { token: string }) {
@@ -78,6 +34,7 @@ export function PublicShare({ token }: { token: string }) {
   const [status, setStatus] = useState<'loading' | 'ok' | 'expired' | 'invalid' | 'error'>('loading');
   const [view, setView] = useState<View>('calendar');
   const [foodFilter, setFoodFilter] = useState('');
+  const [dayModal, setDayModal] = useState<DayEntry[] | null>(null);
 
   // CAP-7b: pattern analysis is fetched lazily — only once the "Padrões" tab is
   // opened — so the calendar/list view never waits on (or pays for) the AI call.
@@ -172,6 +129,20 @@ export function PublicShare({ token }: { token: string }) {
         <div className="seg">
           <button
             type="button"
+            className={view === 'photowall' ? 'seg-btn active' : 'seg-btn'}
+            onClick={() => setView('photowall')}
+          >
+            Parede de Fotos
+          </button>
+          <button
+            type="button"
+            className={view === 'timeline' ? 'seg-btn active' : 'seg-btn'}
+            onClick={() => setView('timeline')}
+          >
+            Timeline
+          </button>
+          <button
+            type="button"
             className={view === 'calendar' ? 'seg-btn active' : 'seg-btn'}
             onClick={() => setView('calendar')}
           >
@@ -230,10 +201,20 @@ export function PublicShare({ token }: { token: string }) {
             : 'Sem registros neste período.'}
         </div>
       ) : view === 'calendar' ? (
-        <CalendarView entries={filteredEntries} start={data.period_start} end={data.period_end} />
+        <CalendarView
+          entries={filteredEntries}
+          start={data.period_start}
+          end={data.period_end}
+          onDayClick={(dayEntries) => setDayModal(dayEntries)}
+        />
+      ) : view === 'photowall' ? (
+        <SharePhotoWallView entries={filteredEntries} />
+      ) : view === 'timeline' ? (
+        <ShareTimelineView entries={filteredEntries} />
       ) : (
         <ListView entries={filteredEntries} />
       )}
+      {dayModal && <DayModal entries={dayModal} onClose={() => setDayModal(null)} />}
     </div>
   );
 }
@@ -289,10 +270,12 @@ function CalendarView({
   entries,
   start,
   end,
+  onDayClick,
 }: {
   entries: SharedEntry[];
   start: string;
   end: string;
+  onDayClick?: (dayEntries: SharedEntry[]) => void;
 }) {
   const byDay = useMemo(() => {
     const map = new Map<string, SharedEntry[]>();
@@ -327,8 +310,10 @@ function CalendarView({
               const thumbs = dayEntries.map((e) => e.photos[0]).filter(Boolean).slice(0, 3);
               const overflow = dayEntries.length - thumbs.length;
               const hasEntriesNoPhoto = inRange && dayEntries.length > 0 && thumbs.length === 0;
-              return (
-                <div className={`cal-cell ${inRange ? '' : 'out'}`} key={day}>
+              const clickable = inRange && dayEntries.length > 0 && !!onDayClick;
+              const cls = `cal-cell${inRange ? '' : ' out'}`;
+              const inner = (
+                <>
                   <span className="cal-day">{Number(day.slice(8))}</span>
                   {thumbs.length > 0 && (
                     <div className="cal-thumbs">
@@ -339,13 +324,116 @@ function CalendarView({
                     </div>
                   )}
                   {hasEntriesNoPhoto && <div className="cal-dot" aria-label="Tem entradas sem foto" />}
-                </div>
+                </>
               );
+              return clickable
+                ? <button className={cls} key={day} onClick={() => onDayClick(dayEntries)}>{inner}</button>
+                : <div className={cls} key={day}>{inner}</div>;
             })}
           </div>
         </div>
       ))}
     </div>
+  );
+}
+
+function SharePhotoWallView({ entries }: { entries: SharedEntry[] }) {
+  return (
+    <div className="photowall-grid">
+      {entries.map((e) => {
+        const time = new Date(e.created_at).toLocaleTimeString('pt-BR', {
+          timeZone: 'America/Sao_Paulo',
+          hour: '2-digit',
+          minute: '2-digit',
+        });
+        const kcal = e.foods.reduce<number | null>((s, f) => f.kcal != null ? (s ?? 0) + f.kcal : s, null);
+        const kcalLabel = kcal != null ? `${Math.round(kcal)} kcal` : '–';
+        const extraPhotos = e.photos.slice(1, 3);
+        const extraOverflow = e.photos.length > 3 ? e.photos.length - 3 : 0;
+        return (
+          <div key={e.id} className="photowall-cell" style={{ cursor: 'default' }}>
+            {e.photos.length > 0
+              ? <img src={e.photos[0]} loading="lazy" alt={e.title ?? 'Foto da refeição'} />
+              : <div className="photowall-cell-ph" role="img" aria-label="Sem foto" />
+            }
+            <div className="photowall-scrim" aria-hidden="true" />
+            <span className="photowall-time">{time}</span>
+            <span className="photowall-kcal">{kcalLabel}</span>
+            {extraPhotos.length > 0 && (
+              <div className="photowall-extra-strip" aria-hidden="true">
+                {extraPhotos.map((url, i) => (
+                  <img key={i} src={url} alt="" loading="lazy" />
+                ))}
+                {extraOverflow > 0 && (
+                  <span className="photowall-extra-badge">+{extraOverflow}</span>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function ShareTimelineView({ entries }: { entries: SharedEntry[] }) {
+  const days = useMemo(() => {
+    const map = new Map<string, SharedEntry[]>();
+    for (const e of entries) {
+      const key = spDate(e.created_at);
+      const list = map.get(key);
+      if (list) list.push(e);
+      else map.set(key, [e]);
+    }
+    return Array.from(map.entries());
+  }, [entries]);
+
+  return (
+    <ul className="timeline-list">
+      {days.map(([day, dayEntries]) => {
+        const sorted = dayEntries
+          .slice()
+          .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+        return (
+          <Fragment key={day}>
+            <li className="tl-sep" aria-hidden="true">
+              <span className="tl-sep-label">{fmtDateBR(day)}</span>
+              <span className="tl-sep-line" />
+            </li>
+            {sorted.map((e) => {
+              const macros = mealTotals(e.foods);
+              return (
+                <li key={e.id} className="tl-item">
+                  {e.photos.length > 0 ? (
+                    <div className="tl-thumb-wrap">
+                      <img
+                        className="tl-thumb"
+                        src={e.photos[0]}
+                        alt={e.title ?? 'Foto da refeição'}
+                        loading="lazy"
+                      />
+                      {e.photos.length > 1 && (
+                        <span className="tl-multi-badge" aria-hidden="true">+{e.photos.length - 1}</span>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="tl-thumb tl-thumb-ph" role="img" aria-label="Sem foto" />
+                  )}
+                  <div className="tl-body">
+                    <span className="tl-time">{spTime(e.created_at)}</span>
+                    <div className="tl-title-row">
+                      <span className="tl-title">{e.title ?? '—'}</span>
+                      {e.context && <span className="ctx-tag">{e.context}</span>}
+                    </div>
+                    {macros && <div className="tl-macros">{macros}</div>}
+                  </div>
+                </li>
+              );
+            })}
+          </Fragment>
+        );
+      })}
+    </ul>
   );
 }
 
