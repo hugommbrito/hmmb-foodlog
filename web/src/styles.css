@@ -114,7 +114,7 @@ input {
 /* Review screen */
 .review { max-width: 720px; margin: 0 auto; padding: var(--space-4); }
 .review header { top: 44px; }
-header { position: sticky; top: 0; background: var(--bg); padding-bottom: var(--space-3); }
+header { position: sticky; top: 0; background: var(--bg); padding-bottom: var(--space-3); z-index: 1; }
 .header-row { display: flex; justify-content: space-between; align-items: center; }
 .controls { display: flex; align-items: center; gap: var(--space-3); }
 .pending { color: var(--muted); font-size: 0.9rem; }
@@ -276,6 +276,17 @@ header { position: sticky; top: 0; background: var(--bg); padding-bottom: var(--
   font-size: 0.8rem;
   font-weight: 700;
   pointer-events: none;
+}
+
+/* Inline confidence percentage badge on entry cards */
+.conf-pct {
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 1px var(--space-2);
+  border-radius: var(--radius-pill);
+  color: #fff;
+  margin-left: var(--space-2);
+  vertical-align: middle;
 }
 
 /* Confidence colors */
@@ -621,6 +632,10 @@ button.link.danger { color: var(--danger); }
   height: 100%;
   object-fit: cover;
   display: block;
+  transition: transform 0.25s ease;
+}
+.photowall-cell:hover img {
+  transform: scale(1.08);
 }
 .photowall-cell-ph {
   width: 100%;
@@ -772,6 +787,24 @@ button.link.danger { color: var(--danger); }
 }
 .tl-thumb-ph {
   background: var(--border);
+}
+.tl-thumb-wrap {
+  width: 64px;
+  height: 64px;
+  flex: none;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  display: block;
+}
+.tl-thumb-wrap .tl-thumb {
+  width: 100%;
+  height: 100%;
+  flex: unset;
+  border-radius: 0;
+  transition: transform 0.25s ease;
+}
+.tl-thumb-wrap:hover .tl-thumb {
+  transform: scale(1.1);
 }
 .tl-body {
   flex: 1;

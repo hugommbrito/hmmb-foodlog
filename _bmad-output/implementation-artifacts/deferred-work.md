@@ -177,6 +177,13 @@ Valores abaixo de `--space-1` (4px) e acima de `--space-6` (32px) que ficaram ha
 - **`overflow` conta entries em vez de fotos com foto**: `dayEntries.length - thumbs.length` em `Share.tsx:CalendarView`. Quando um dia tem 5 entries mas só 2 com foto, `overflow = 3` — mas esses 3 "excedentes" incluem entries sem foto, não fotos ocultas. O `+3` exibido é enganoso. Fix correto: contar só entries com `photos[0]` válido antes do slice, e calcular overflow como `validPhotos.length - 3` quando positivo.
 - **Filtro de alimento distorce o ponto de acento no calendário**: `CalendarView` recebe `filteredEntries` (já filtradas por food name) e constrói `byDay` a partir desse subset. Se um dia tem 3 entries mas só 1 bate no filtro, e essa 1 entry não tem foto, o ponto de acento aparece sugerindo "dia sem foto" — quando na verdade o dia tem fotos em outras entries. Considerar usar `data.entries` diretamente para o grid do calendário (e `filteredEntries` só para a ListView).
 
+## UI diferida — Fix header/confiança/hover (encontrada na revisão adversarial)
+
+- **`conf-mid` indistinguível de `conf-none`**: `.conf-mid` usa `background: var(--neutral)` (cinza), igual a `.conf-none`. Pré-existente — afeta tanto o dot colorido nos alimentos quanto o badge `.conf-pct`. Considerar `--warning` (amarelo) para "médio" e reservar neutro só para "sem dado".
+- **`z-index: 1` no header pode suprimir futuros dropdowns/tooltips absolutamente posicionados**: se o header ganhar algum elemento com `position: absolute`, ele será cortado pelas `.tabs { z-index: 2 }`. Risco teórico; mitigação futura seria elevar o header para `z-index: 3` (acima das tabs) se um dropdown for adicionado.
+- **`aria-label` do `conf-border` anuncia "0.00" quando análise pendente**: `<div aria-label="Confiança da IA: 0.00">` quando `ai_confidence_overall === 0` informa estado pendente de modo enganoso a leitores de tela. Pré-existente; considerar `aria-label` condicional ("análise pendente" quando 0, "XX%" quando > 0).
+- **`.tl-thumb` tem dupla personalidade dentro/fora do wrapper**: a classe `.tl-thumb` se comporta diferente dependendo de estar dentro de `.tl-thumb-wrap` ou não (sizes, border-radius, flex overrideados). Se o wrapper for removido no futuro, o thumb-ph (placeholder) precisa ser testado.
+
 ## UX diferida — Story 2.1 Tab Bar (encontradas na revisão adversarial)
 
 - **Footer "Auditoria" sem active state**: quando `tab === 'audit'`, nenhum botão no nav nem no footer fica visualmente ativo — UX gap menor. O design intencional é que Audit seja discreta, mas o usuário não tem confirmação visual de onde está. Considerar adicionar indicador discreto ao footer button quando `tab === 'audit'` (ex.: `font-weight: 600`).

@@ -519,12 +519,14 @@ function TimelineView({ slots, tags }: { slots: DashboardSlot[]; tags: ContextTa
               return (
                 <li key={e.id} className="tl-item">
                   {e.photos.length > 0 ? (
-                    <img
-                      className="tl-thumb"
-                      src={e.photos[0]}
-                      alt={e.title ?? 'Foto da refeição'}
-                      loading="lazy"
-                    />
+                    <div className="tl-thumb-wrap">
+                      <img
+                        className="tl-thumb"
+                        src={e.photos[0]}
+                        alt={e.title ?? 'Foto da refeição'}
+                        loading="lazy"
+                      />
+                    </div>
                   ) : (
                     <div className="tl-thumb tl-thumb-ph" role="img" aria-label="Sem foto" />
                   )}
@@ -1247,6 +1249,11 @@ function EntryCard({
             <div>
               <strong>{entry.title ?? 'Sem título'}</strong>
               <span className="time">{time}</span>
+              {entry.ai_confidence_overall > 0 && (
+                <span className={`conf-pct ${confClass(entry.ai_confidence_overall)}`}>
+                  {pct(entry.ai_confidence_overall)}
+                </span>
+              )}
             </div>
             {totals && <div className="totals">{totals}</div>}
           </div>
