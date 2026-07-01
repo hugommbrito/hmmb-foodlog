@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   acceptEntry,
   clearToken,
@@ -270,6 +270,13 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
   const [customEnd, setCustomEnd] = useState<string>(todayLocal());
   const [view, setView] = useState<DashboardView>('photowall');
   const [slots, setSlots] = useState<DashboardSlot[]>([]);
+  const [tags, setTags] = useState<ContextTag[]>([]);
+
+  useEffect(() => {
+    fetchTags()
+      .then(setTags)
+      .catch((err) => { if (err instanceof UnauthorizedError) onLogout(); });
+  }, [onLogout]);
 
   useEffect(() => {
     let cancelled = false;
@@ -357,7 +364,7 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
       {slots.length > 0 && !isEmpty && (
         view === 'photowall'
           ? <PhotoWallView slots={slots} />
-          : <TimelineView slots={slots} />
+          : <TimelineView slots={slots} tags={tags} />
       )}
     </div>
   );
@@ -473,14 +480,75 @@ function PhotoWallModal({ entry, onClose }: { entry: EntryWithFoods; onClose: ()
   );
 }
 
-function TimelineView({ slots }: { slots: DashboardSlot[] }) {
+function TimelineView({ slots, tags }: { slots: DashboardSlot[]; tags: ContextTag[] }) {
+  const WEEKDAYS = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
+  const tagsById = new Map(tags.map((t) => [t.id, t]));
+
+  function dayLabel(dateStr: string): string {
+    const [y, m, d] = dateStr.split('-').map(Number);
+    const dt = new Date(y, m - 1, d);
+    return `${WEEKDAYS[dt.getDay()]} ${String(d).padStart(2, '0')}/${String(m).padStart(2, '0')}`;
+  }
+
   return (
     <ul className="timeline-list">
-      {slots.map((slot) =>
-        slot.status === 'loading'
-          ? <li key={slot.date} className="skeleton-item" aria-hidden="true" />
-          : null
-      )}
+      {slots.map((slot) => {
+        if (slot.status === 'loading') {
+          return <li key={slot.date} className="skeleton-item" aria-hidden="true" />;
+        }
+        if (slot.status !== 'done' || slot.entries.length === 0) return null;
+
+        const sorted = slot.entries
+          .slice()
+          .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+
+        return (
+          <Fragment key={slot.date}>
+            <li className="tl-sep" aria-hidden="true">
+              <span className="tl-sep-label">{dayLabel(slot.date)}</span>
+              <span className="tl-sep-line" />
+            </li>
+            {sorted.map((e) => {
+              const time = new Date(e.created_at).toLocaleTimeString('pt-BR', {
+                hour: '2-digit',
+                minute: '2-digit',
+              });
+              const macros = formatMacros(e.foods);
+              const tag = e.context_tag_id ? tagsById.get(e.context_tag_id) : undefined;
+
+              return (
+                <li key={e.id} className="tl-item">
+                  {e.photos.length > 0 ? (
+                    <img
+                      className="tl-thumb"
+                      src={e.photos[0]}
+                      alt={e.title ?? 'Foto da refeição'}
+                      loading="lazy"
+                    />
+                  ) : (
+                    <div className="tl-thumb tl-thumb-ph" role="img" aria-label="Sem foto" />
+                  )}
+                  <div className="tl-body">
+                    <span className="tl-time">{time}</span>
+                    <div className="tl-title-row">
+                      <span className="tl-title">{e.title ?? '—'}</span>
+                      {tag && (
+                        <span
+                          className="tag-badge tl-tag"
+                          style={{ background: tag.color, color: textOn(tag.color) }}
+                        >
+                          {tag.name}
+                        </span>
+                      )}
+                    </div>
+                    {macros && <div className="tl-macros">{macros}</div>}
+                  </div>
+                </li>
+              );
+            })}
+          </Fragment>
+        );
+      })}
     </ul>
   );
 }
