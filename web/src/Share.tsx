@@ -326,6 +326,7 @@ function CalendarView({
               const dayEntries = byDay.get(day) ?? [];
               const thumbs = dayEntries.map((e) => e.photos[0]).filter(Boolean).slice(0, 3);
               const overflow = dayEntries.length - thumbs.length;
+              const hasEntriesNoPhoto = inRange && dayEntries.length > 0 && thumbs.length === 0;
               return (
                 <div className={`cal-cell ${inRange ? '' : 'out'}`} key={day}>
                   <span className="cal-day">{Number(day.slice(8))}</span>
@@ -337,6 +338,7 @@ function CalendarView({
                       {overflow > 0 && <span className="cal-more">+{overflow}</span>}
                     </div>
                   )}
+                  {hasEntriesNoPhoto && <div className="cal-dot" aria-label="Tem entradas sem foto" />}
                 </div>
               );
             })}

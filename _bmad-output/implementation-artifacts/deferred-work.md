@@ -172,6 +172,11 @@ Valores abaixo de `--space-1` (4px) e acima de `--space-6` (32px) que ficaram ha
 - **Flash inicial de "Sem registros neste dia."**: `loading` inicializa como `false` e `entries` como `[]`, então entre o mount e o primeiro `setLoading(true)` do useEffect, o mini-resumo exibe por um frame o estado vazio. Padrão pré-existente na componente (mesmo comportamento em `"Nenhuma entrada neste dia."`). Mitigação se incomodar: inicializar `loading: true` ou adicionar flag `hasLoaded` (booleano que só vira true após o primeiro fetch completar).
 - **Totais do mini-resumo não refletem filtro de tag ativo**: por design, os macros exibidos são o total do dia sobre `entries` (não sobre `visible`). Quando o usuário filtra por tag, a lista mostra subset das entradas mas o mini-resumo continua exibindo o total do dia completo — sem UI signal indicando isso. Consideração UX futura: adicionar nota "total do dia" ou destacar o macros conforme os dos cards visíveis.
 
+## Melhorias diferidas — Story 4.1 Calendário Compartilhado (encontradas na revisão)
+
+- **`overflow` conta entries em vez de fotos com foto**: `dayEntries.length - thumbs.length` em `Share.tsx:CalendarView`. Quando um dia tem 5 entries mas só 2 com foto, `overflow = 3` — mas esses 3 "excedentes" incluem entries sem foto, não fotos ocultas. O `+3` exibido é enganoso. Fix correto: contar só entries com `photos[0]` válido antes do slice, e calcular overflow como `validPhotos.length - 3` quando positivo.
+- **Filtro de alimento distorce o ponto de acento no calendário**: `CalendarView` recebe `filteredEntries` (já filtradas por food name) e constrói `byDay` a partir desse subset. Se um dia tem 3 entries mas só 1 bate no filtro, e essa 1 entry não tem foto, o ponto de acento aparece sugerindo "dia sem foto" — quando na verdade o dia tem fotos em outras entries. Considerar usar `data.entries` diretamente para o grid do calendário (e `filteredEntries` só para a ListView).
+
 ## UX diferida — Story 2.1 Tab Bar (encontradas na revisão adversarial)
 
 - **Footer "Auditoria" sem active state**: quando `tab === 'audit'`, nenhum botão no nav nem no footer fica visualmente ativo — UX gap menor. O design intencional é que Audit seja discreta, mas o usuário não tem confirmação visual de onde está. Considerar adicionar indicador discreto ao footer button quando `tab === 'audit'` (ex.: `font-weight: 600`).
