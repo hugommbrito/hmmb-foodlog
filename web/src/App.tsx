@@ -584,7 +584,6 @@ export function DayModal({ entries, onClose }: { entries: DayEntry[]; onClose: (
 
 const RTL_START = 6;
 const RTL_END = 23;
-const RTL_SLOT_W = 20; // px per 15-min interval
 const RTL_TOTAL = (RTL_END - RTL_START) * 4; // 68 slots (06:00–22:45)
 const RTL_WEEKDAYS = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
 const RTL_TICKS = Array.from({ length: RTL_TOTAL + 1 }, (_, i) => {
@@ -632,8 +631,12 @@ function TimelineView({ slots }: { slots: DashboardSlot[] }) {
             grouped.get(s)!.push(e);
           }
 
-          const maxStack = Math.max(...Array.from(grouped.values()).map((g) => g.length));
-          const entriesHeight = maxStack * 44 + (maxStack - 1) * 4 + 12;
+          const maxStack = Math.max(
+            ...Array.from(grouped.values()).map((g) =>
+              g.reduce((n, e) => n + Math.max(1, e.photos.length), 0),
+            ),
+          );
+          const entriesHeight = maxStack * 66 + (maxStack - 1) * 4 + 12;
 
           return (
             <div key={slot.date} className="rtl-day">
@@ -642,7 +645,7 @@ function TimelineView({ slots }: { slots: DashboardSlot[] }) {
                 <span className="rtl-label-date">{datePart}</span>
               </div>
               <div className="rtl-content">
-                <div className="rtl-inner" style={{ width: (RTL_TOTAL + 1) * RTL_SLOT_W }}>
+                <div className="rtl-inner">
                   <div className="rtl-ruler" role="presentation" aria-hidden="true">
                     {RTL_TICKS.map(({ i, isHour, hour, showLabel }) => (
                       <div key={i} className={`rtl-tick${isHour ? ' rtl-tick-hour' : ''}`}>
@@ -658,27 +661,25 @@ function TimelineView({ slots }: { slots: DashboardSlot[] }) {
                       <div
                         key={slotIdx}
                         className="rtl-entry-group"
-                        style={{ left: slotIdx * RTL_SLOT_W }}
+                        style={{ left: `${(slotIdx / RTL_TOTAL) * 100}%` }}
                       >
-                        {entries.map((e) => (
-                          <button
-                            key={e.id}
-                            className="rtl-card"
-                            onClick={() => setModalEntry(e)}
-                            aria-label={e.title ?? 'Ver refeição'}
-                          >
-                            {e.photos.length > 0 ? (
-                              <img src={e.photos[0]} alt={e.title ?? 'Foto'} loading="lazy" />
-                            ) : (
-                              <div className="rtl-card-ph" role="img" aria-label="Sem foto" />
-                            )}
-                            {e.photos.length > 1 && (
-                              <span className="rtl-multi-badge" aria-hidden="true">
-                                +{e.photos.length - 1}
-                              </span>
-                            )}
-                          </button>
-                        ))}
+                        {entries.flatMap((e) => {
+                          const photos = e.photos.length > 0 ? e.photos : [null];
+                          return photos.map((photo, pi) => (
+                            <button
+                              key={`${e.id}-${pi}`}
+                              className="rtl-card"
+                              onClick={() => setModalEntry(e)}
+                              aria-label={e.title ?? 'Ver refeição'}
+                            >
+                              {photo ? (
+                                <img src={photo} alt={e.title ?? 'Foto'} loading="lazy" />
+                              ) : (
+                                <div className="rtl-card-ph" role="img" aria-label="Sem foto" />
+                              )}
+                            </button>
+                          ));
+                        })}
                       </div>
                     ))}
                   </div>
