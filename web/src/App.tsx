@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   acceptEntry,
   clearToken,
@@ -272,13 +272,6 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
   const [customEnd, setCustomEnd] = useState<string>(todayLocal());
   const [view, setView] = useState<DashboardView>('photowall');
   const [slots, setSlots] = useState<DashboardSlot[]>([]);
-  const [tags, setTags] = useState<ContextTag[]>([]);
-
-  useEffect(() => {
-    fetchTags()
-      .then(setTags)
-      .catch((err) => { if (err instanceof UnauthorizedError) onLogout(); });
-  }, [onLogout]);
 
   useEffect(() => {
     let cancelled = false;
@@ -379,7 +372,7 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
         view === 'photowall'
           ? <PhotoWallView slots={slots} />
           : view === 'timeline'
-            ? <TimelineView slots={slots} tags={tags} />
+            ? <TimelineView slots={slots} />
             : view === 'calendar'
               ? <DashboardCalendarView slots={slots} />
               : <DashboardListView slots={slots} />
@@ -589,81 +582,114 @@ export function DayModal({ entries, onClose }: { entries: DayEntry[]; onClose: (
   );
 }
 
-function TimelineView({ slots, tags }: { slots: DashboardSlot[]; tags: ContextTag[] }) {
-  const WEEKDAYS = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
-  const tagsById = new Map(tags.map((t) => [t.id, t]));
+const RTL_START = 6;
+const RTL_END = 23;
+const RTL_SLOT_W = 20; // px per 15-min interval
+const RTL_TOTAL = (RTL_END - RTL_START) * 4; // 68 slots (06:00–22:45)
+const RTL_WEEKDAYS = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
+const RTL_TICKS = Array.from({ length: RTL_TOTAL + 1 }, (_, i) => {
+  const isHour = i % 4 === 0;
+  const hour = RTL_START + Math.floor(i / 4);
+  return { i, isHour, hour, showLabel: isHour && i % 8 === 0 };
+});
 
-  function dayLabel(dateStr: string): string {
+function TimelineView({ slots }: { slots: DashboardSlot[] }) {
+  const [modalEntry, setModalEntry] = useState<EntryWithFoods | null>(null);
+
+  function dayParts(dateStr: string): [string, string] {
     const [y, m, d] = dateStr.split('-').map(Number);
     const dt = new Date(y, m - 1, d);
-    return `${WEEKDAYS[dt.getDay()]} ${String(d).padStart(2, '0')}/${String(m).padStart(2, '0')}`;
+    return [
+      RTL_WEEKDAYS[dt.getDay()],
+      `${String(d).padStart(2, '0')}/${String(m).padStart(2, '0')}`,
+    ];
+  }
+
+  function entryToSlot(createdAt: string): number {
+    const dt = new Date(createdAt);
+    const slot = (dt.getHours() - RTL_START) * 4 + Math.floor(dt.getMinutes() / 15);
+    return Math.max(0, Math.min(RTL_TOTAL - 1, slot));
   }
 
   return (
-    <ul className="timeline-list">
-      {slots.map((slot) => {
-        if (slot.status === 'loading') {
-          return <li key={slot.date} className="skeleton-item" aria-hidden="true" />;
-        }
-        if (slot.status !== 'done' || slot.entries.length === 0) return null;
+    <>
+      <div className="rtl-wrap">
+        {slots.map((slot) => {
+          if (slot.status === 'loading') {
+            return <div key={slot.date} className="skeleton-item rtl-skeleton" aria-hidden="true" />;
+          }
+          if (slot.status !== 'done' || slot.entries.length === 0) return null;
 
-        const sorted = slot.entries
-          .slice()
-          .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+          const [weekday, datePart] = dayParts(slot.date);
+          const sorted = [...slot.entries].sort(
+            (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
+          );
 
-        return (
-          <Fragment key={slot.date}>
-            <li className="tl-sep" aria-hidden="true">
-              <span className="tl-sep-label">{dayLabel(slot.date)}</span>
-              <span className="tl-sep-line" />
-            </li>
-            {sorted.map((e) => {
-              const time = new Date(e.created_at).toLocaleTimeString('pt-BR', {
-                hour: '2-digit',
-                minute: '2-digit',
-              });
-              const macros = formatMacros(e.foods);
-              const tag = e.context_tag_id ? tagsById.get(e.context_tag_id) : undefined;
+          const grouped = new Map<number, EntryWithFoods[]>();
+          for (const e of sorted) {
+            const s = entryToSlot(e.created_at);
+            if (!grouped.has(s)) grouped.set(s, []);
+            grouped.get(s)!.push(e);
+          }
 
-              return (
-                <li key={e.id} className="tl-item">
-                  {e.photos.length > 0 ? (
-                    <div className="tl-thumb-wrap">
-                      <img
-                        className="tl-thumb"
-                        src={e.photos[0]}
-                        alt={e.title ?? 'Foto da refeição'}
-                        loading="lazy"
-                      />
-                      {e.photos.length > 1 && (
-                        <span className="tl-multi-badge" aria-hidden="true">+{e.photos.length - 1}</span>
-                      )}
-                    </div>
-                  ) : (
-                    <div className="tl-thumb tl-thumb-ph" role="img" aria-label="Sem foto" />
-                  )}
-                  <div className="tl-body">
-                    <span className="tl-time">{time}</span>
-                    <div className="tl-title-row">
-                      <span className="tl-title">{e.title ?? '—'}</span>
-                      {tag && (
-                        <span
-                          className="tag-badge tl-tag"
-                          style={{ background: tag.color, color: textOn(tag.color) }}
-                        >
-                          {tag.name}
-                        </span>
-                      )}
-                    </div>
-                    {macros && <div className="tl-macros">{macros}</div>}
+          const maxStack = Math.max(...Array.from(grouped.values()).map((g) => g.length));
+          const entriesHeight = maxStack * 44 + (maxStack - 1) * 4 + 12;
+
+          return (
+            <div key={slot.date} className="rtl-day">
+              <div className="rtl-label" aria-label={`${weekday} ${datePart}`}>
+                <span className="rtl-label-day">{weekday}</span>
+                <span className="rtl-label-date">{datePart}</span>
+              </div>
+              <div className="rtl-content">
+                <div className="rtl-inner" style={{ width: (RTL_TOTAL + 1) * RTL_SLOT_W }}>
+                  <div className="rtl-ruler" role="presentation" aria-hidden="true">
+                    {RTL_TICKS.map(({ i, isHour, hour, showLabel }) => (
+                      <div key={i} className={`rtl-tick${isHour ? ' rtl-tick-hour' : ''}`}>
+                        {showLabel && (
+                          <span className="rtl-hour-label">{String(hour).padStart(2, '0')}</span>
+                        )}
+                        <span className="rtl-tick-mark" />
+                      </div>
+                    ))}
                   </div>
-                </li>
-              );
-            })}
-          </Fragment>
-        );
-      })}
-    </ul>
+                  <div className="rtl-entries" style={{ height: entriesHeight }}>
+                    {Array.from(grouped.entries()).map(([slotIdx, entries]) => (
+                      <div
+                        key={slotIdx}
+                        className="rtl-entry-group"
+                        style={{ left: slotIdx * RTL_SLOT_W }}
+                      >
+                        {entries.map((e) => (
+                          <button
+                            key={e.id}
+                            className="rtl-card"
+                            onClick={() => setModalEntry(e)}
+                            aria-label={e.title ?? 'Ver refeição'}
+                          >
+                            {e.photos.length > 0 ? (
+                              <img src={e.photos[0]} alt={e.title ?? 'Foto'} loading="lazy" />
+                            ) : (
+                              <div className="rtl-card-ph" role="img" aria-label="Sem foto" />
+                            )}
+                            {e.photos.length > 1 && (
+                              <span className="rtl-multi-badge" aria-hidden="true">
+                                +{e.photos.length - 1}
+                              </span>
+                            )}
+                          </button>
+                        ))}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      {modalEntry && <PhotoWallModal entry={modalEntry} onClose={() => setModalEntry(null)} />}
+    </>
   );
 }
 

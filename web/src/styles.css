@@ -958,3 +958,135 @@ button.cal-cell:hover {
 .day-modal-time { font-size: 0.78rem; color: var(--muted); }
 .day-modal-title { font-size: 0.95rem; font-weight: 600; color: var(--text); }
 .day-modal-macros { font-size: 0.8rem; color: var(--muted); }
+
+/* ── Ruler Timeline (rtl-) ─────────────────────────────── */
+.rtl-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  padding-top: var(--space-2);
+}
+.rtl-skeleton {
+  height: 96px;
+  border-radius: var(--radius-sm);
+}
+.rtl-day {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+}
+.rtl-label {
+  width: 52px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  padding-top: 12px;
+  gap: 1px;
+}
+.rtl-label-day {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text);
+  line-height: 1;
+}
+.rtl-label-date {
+  font-size: 0.66rem;
+  color: var(--muted);
+  line-height: 1;
+}
+.rtl-content {
+  flex: 1;
+  overflow-x: auto;
+  overflow-y: visible;
+  -webkit-overflow-scrolling: touch;
+}
+.rtl-inner {
+  /* width set inline */
+}
+.rtl-ruler {
+  display: flex;
+  align-items: flex-end;
+  height: 28px;
+  border-bottom: 1px solid var(--border);
+}
+.rtl-tick {
+  width: 20px;
+  flex-shrink: 0;
+  height: 28px;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  align-items: flex-start;
+}
+.rtl-tick-mark {
+  display: block;
+  width: 1px;
+  background: var(--border);
+  height: 6px;
+}
+.rtl-tick-hour .rtl-tick-mark {
+  height: 13px;
+  background: var(--muted);
+}
+.rtl-hour-label {
+  position: absolute;
+  top: 4px;
+  left: 2px;
+  font-size: 0.6rem;
+  color: var(--muted);
+  white-space: nowrap;
+  line-height: 1;
+  pointer-events: none;
+}
+.rtl-entries {
+  position: relative;
+}
+.rtl-entry-group {
+  position: absolute;
+  top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  transform: translateX(-50%);
+}
+.rtl-card {
+  appearance: none;
+  border: 1.5px solid var(--accent);
+  background: var(--card);
+  padding: 0;
+  width: 44px;
+  height: 44px;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  cursor: pointer;
+  position: relative;
+  display: block;
+  transition: transform 0.12s;
+}
+.rtl-card:hover { transform: scale(1.1); }
+.rtl-card img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.rtl-card-ph {
+  width: 100%;
+  height: 100%;
+  background: var(--accent-light);
+}
+.rtl-multi-badge {
+  position: absolute;
+  bottom: 2px;
+  right: 2px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 0.58rem;
+  line-height: 1;
+  padding: 1px 3px;
+  border-radius: 3px;
+  pointer-events: none;
+  font-weight: 600;
+}
