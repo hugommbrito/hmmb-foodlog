@@ -272,6 +272,13 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
   const [customEnd, setCustomEnd] = useState<string>(todayLocal());
   const [view, setView] = useState<DashboardView>('photowall');
   const [slots, setSlots] = useState<DashboardSlot[]>([]);
+  const [tags, setTags] = useState<ContextTag[]>([]);
+
+  useEffect(() => {
+    fetchTags()
+      .then(setTags)
+      .catch((err) => { if (err instanceof UnauthorizedError) onLogout(); });
+  }, [onLogout]);
 
   useEffect(() => {
     let cancelled = false;
@@ -372,7 +379,7 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
         view === 'photowall'
           ? <PhotoWallView slots={slots} />
           : view === 'timeline'
-            ? <TimelineView slots={slots} />
+            ? <TimelineView slots={slots} tags={tags} />
             : view === 'calendar'
               ? <DashboardCalendarView slots={slots} />
               : <DashboardListView slots={slots} />
@@ -592,15 +599,18 @@ const RTL_TICKS = Array.from({ length: RTL_TOTAL + 1 }, (_, i) => {
   return { i, isHour, hour, showLabel: isHour && i % 8 === 0 };
 });
 
-function TimelineView({ slots }: { slots: DashboardSlot[] }) {
+function TimelineView({ slots, tags }: { slots: DashboardSlot[]; tags: ContextTag[] }) {
   const [modalEntry, setModalEntry] = useState<EntryWithFoods | null>(null);
+  const tagsById = new Map(tags.map((t) => [t.id, t]));
 
-  function dayParts(dateStr: string): [string, string] {
+  function dayParts(dateStr: string): [string, string, boolean] {
     const [y, m, d] = dateStr.split('-').map(Number);
     const dt = new Date(y, m - 1, d);
+    const dow = dt.getDay();
     return [
-      RTL_WEEKDAYS[dt.getDay()],
+      RTL_WEEKDAYS[dow],
       `${String(d).padStart(2, '0')}/${String(m).padStart(2, '0')}`,
+      dow === 0 || dow === 6,
     ];
   }
 
@@ -619,7 +629,7 @@ function TimelineView({ slots }: { slots: DashboardSlot[] }) {
           }
           if (slot.status !== 'done' || slot.entries.length === 0) return null;
 
-          const [weekday, datePart] = dayParts(slot.date);
+          const [weekday, datePart, isWeekend] = dayParts(slot.date);
           const sorted = [...slot.entries].sort(
             (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
           );
@@ -631,6 +641,14 @@ function TimelineView({ slots }: { slots: DashboardSlot[] }) {
             grouped.get(s)!.push(e);
           }
 
+          const slotTagColor = new Map<number, string>();
+          for (const [s, entries] of grouped.entries()) {
+            const color = entries[0].context_tag_id
+              ? tagsById.get(entries[0].context_tag_id)?.color
+              : undefined;
+            if (color) slotTagColor.set(s, color);
+          }
+
           const maxStack = Math.max(
             ...Array.from(grouped.values()).map((g) =>
               g.reduce((n, e) => n + Math.max(1, e.photos.length), 0),
@@ -639,7 +657,7 @@ function TimelineView({ slots }: { slots: DashboardSlot[] }) {
           const entriesHeight = maxStack * 66 + (maxStack - 1) * 4 + 12;
 
           return (
-            <div key={slot.date} className="rtl-day">
+            <div key={slot.date} className={`rtl-day${isWeekend ? ' rtl-day-weekend' : ''}`}>
               <div className="rtl-label" aria-label={`${weekday} ${datePart}`}>
                 <span className="rtl-label-day">{weekday}</span>
                 <span className="rtl-label-date">{datePart}</span>
@@ -647,23 +665,32 @@ function TimelineView({ slots }: { slots: DashboardSlot[] }) {
               <div className="rtl-content">
                 <div className="rtl-inner">
                   <div className="rtl-ruler" role="presentation" aria-hidden="true">
-                    {RTL_TICKS.map(({ i, isHour, hour, showLabel }) => (
-                      <div key={i} className={`rtl-tick${isHour ? ' rtl-tick-hour' : ''}`}>
-                        {showLabel && (
-                          <span className="rtl-hour-label">{String(hour).padStart(2, '0')}</span>
-                        )}
-                        <span className="rtl-tick-mark" />
-                      </div>
-                    ))}
+                    {RTL_TICKS.map(({ i, isHour, hour, showLabel }) => {
+                      const tickColor = slotTagColor.get(i);
+                      return (
+                        <div key={i} className={`rtl-tick${isHour ? ' rtl-tick-hour' : ''}${grouped.has(i) ? ' rtl-tick-active' : ''}`}>
+                          {showLabel && (
+                            <span className="rtl-hour-label">{String(hour).padStart(2, '0')}</span>
+                          )}
+                          <span
+                            className="rtl-tick-mark"
+                            style={tickColor ? { background: tickColor } : undefined}
+                          />
+                        </div>
+                      );
+                    })}
                   </div>
                   <div className="rtl-entries" style={{ height: entriesHeight }}>
-                    {Array.from(grouped.entries()).map(([slotIdx, entries]) => (
+                    {Array.from(grouped.entries()).reverse().map(([slotIdx, entries]) => (
                       <div
                         key={slotIdx}
                         className="rtl-entry-group"
                         style={{ left: `${(slotIdx / RTL_TOTAL) * 100}%` }}
                       >
                         {entries.flatMap((e) => {
+                          const tagColor = e.context_tag_id
+                            ? tagsById.get(e.context_tag_id)?.color
+                            : undefined;
                           const photos = e.photos.length > 0 ? e.photos : [null];
                           return photos.map((photo, pi) => (
                             <button
@@ -671,11 +698,17 @@ function TimelineView({ slots }: { slots: DashboardSlot[] }) {
                               className="rtl-card"
                               onClick={() => setModalEntry(e)}
                               aria-label={e.title ?? 'Ver refeição'}
+                              style={tagColor ? { borderColor: tagColor } : undefined}
                             >
                               {photo ? (
                                 <img src={photo} alt={e.title ?? 'Foto'} loading="lazy" />
                               ) : (
-                                <div className="rtl-card-ph" role="img" aria-label="Sem foto" />
+                                <div
+                                  className="rtl-card-ph"
+                                  role="img"
+                                  aria-label="Sem foto"
+                                  style={tagColor ? { background: `${tagColor}1a` } : undefined}
+                                />
                               )}
                             </button>
                           ));

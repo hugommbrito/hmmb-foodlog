@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { fetchShared, fetchSharedPatterns, ShareExpiredError, ShareInvalidError } from './api';
 import { DayModal, FoodRow, mealTotals } from './App';
 import type { DayEntry } from './App';
@@ -376,7 +376,19 @@ function SharePhotoWallView({ entries }: { entries: SharedEntry[] }) {
   );
 }
 
+const SHR_START = 6;
+const SHR_END = 23;
+const SHR_TOTAL = (SHR_END - SHR_START) * 4;
+const SHR_WEEKDAYS = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
+const SHR_TICKS = Array.from({ length: SHR_TOTAL + 1 }, (_, i) => {
+  const isHour = i % 4 === 0;
+  const hour = SHR_START + Math.floor(i / 4);
+  return { i, isHour, hour, showLabel: isHour && i % 8 === 0 };
+});
+
 function ShareTimelineView({ entries }: { entries: SharedEntry[] }) {
+  const [modal, setModal] = useState<SharedEntry | null>(null);
+
   const days = useMemo(() => {
     const map = new Map<string, SharedEntry[]>();
     for (const e of entries) {
@@ -385,55 +397,102 @@ function ShareTimelineView({ entries }: { entries: SharedEntry[] }) {
       if (list) list.push(e);
       else map.set(key, [e]);
     }
-    return Array.from(map.entries());
+    return Array.from(map.entries()).sort(([a], [b]) => a.localeCompare(b));
   }, [entries]);
 
+  function dayLabel(dateStr: string): [string, string, boolean] {
+    const [y, m, d] = dateStr.split('-').map(Number);
+    const dt = new Date(y, m - 1, d);
+    const dow = dt.getDay();
+    return [
+      SHR_WEEKDAYS[dow],
+      `${String(d).padStart(2, '0')}/${String(m).padStart(2, '0')}`,
+      dow === 0 || dow === 6,
+    ];
+  }
+
+  function entryToSlot(iso: string): number {
+    const [h, m] = spTime(iso).split(':').map(Number);
+    const slot = (h - SHR_START) * 4 + Math.floor(m / 15);
+    return Math.max(0, Math.min(SHR_TOTAL - 1, slot));
+  }
+
   return (
-    <ul className="timeline-list">
-      {days.map(([day, dayEntries]) => {
-        const sorted = dayEntries
-          .slice()
-          .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
-        return (
-          <Fragment key={day}>
-            <li className="tl-sep" aria-hidden="true">
-              <span className="tl-sep-label">{fmtDateBR(day)}</span>
-              <span className="tl-sep-line" />
-            </li>
-            {sorted.map((e) => {
-              const macros = mealTotals(e.foods);
-              return (
-                <li key={e.id} className="tl-item">
-                  {e.photos.length > 0 ? (
-                    <div className="tl-thumb-wrap">
-                      <img
-                        className="tl-thumb"
-                        src={e.photos[0]}
-                        alt={e.title ?? 'Foto da refeição'}
-                        loading="lazy"
-                      />
-                      {e.photos.length > 1 && (
-                        <span className="tl-multi-badge" aria-hidden="true">+{e.photos.length - 1}</span>
-                      )}
-                    </div>
-                  ) : (
-                    <div className="tl-thumb tl-thumb-ph" role="img" aria-label="Sem foto" />
-                  )}
-                  <div className="tl-body">
-                    <span className="tl-time">{spTime(e.created_at)}</span>
-                    <div className="tl-title-row">
-                      <span className="tl-title">{e.title ?? '—'}</span>
-                      {e.context && <span className="ctx-tag">{e.context}</span>}
-                    </div>
-                    {macros && <div className="tl-macros">{macros}</div>}
+    <>
+      <div className="rtl-wrap">
+        {days.map(([day, dayEntries]) => {
+          const [weekday, datePart, isWeekend] = dayLabel(day);
+          const sorted = [...dayEntries].sort(
+            (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
+          );
+
+          const grouped = new Map<number, SharedEntry[]>();
+          for (const e of sorted) {
+            const s = entryToSlot(e.created_at);
+            if (!grouped.has(s)) grouped.set(s, []);
+            grouped.get(s)!.push(e);
+          }
+
+          const maxStack = Math.max(
+            ...Array.from(grouped.values()).map((g) =>
+              g.reduce((n, e) => n + Math.max(1, e.photos.length), 0),
+            ),
+          );
+          const entriesHeight = maxStack * 66 + (maxStack - 1) * 4 + 12;
+
+          return (
+            <div key={day} className={`rtl-day${isWeekend ? ' rtl-day-weekend' : ''}`}>
+              <div className="rtl-label" aria-label={`${weekday} ${datePart}`}>
+                <span className="rtl-label-day">{weekday}</span>
+                <span className="rtl-label-date">{datePart}</span>
+              </div>
+              <div className="rtl-content">
+                <div className="rtl-inner">
+                  <div className="rtl-ruler" role="presentation" aria-hidden="true">
+                    {SHR_TICKS.map(({ i, isHour, hour, showLabel }) => (
+                      <div key={i} className={`rtl-tick${isHour ? ' rtl-tick-hour' : ''}${grouped.has(i) ? ' rtl-tick-active' : ''}`}>
+                        {showLabel && (
+                          <span className="rtl-hour-label">{String(hour).padStart(2, '0')}</span>
+                        )}
+                        <span className="rtl-tick-mark" />
+                      </div>
+                    ))}
                   </div>
-                </li>
-              );
-            })}
-          </Fragment>
-        );
-      })}
-    </ul>
+                  <div className="rtl-entries" style={{ height: entriesHeight }}>
+                    {Array.from(grouped.entries()).map(([slotIdx, slotEntries]) => (
+                      <div
+                        key={slotIdx}
+                        className="rtl-entry-group"
+                        style={{ left: `${(slotIdx / SHR_TOTAL) * 100}%` }}
+                      >
+                        {slotEntries.flatMap((e) => {
+                          const photos = e.photos.length > 0 ? e.photos : [null];
+                          return photos.map((photo, pi) => (
+                            <button
+                              key={`${e.id}-${pi}`}
+                              className="rtl-card"
+                              onClick={() => setModal(e)}
+                              aria-label={e.title ?? 'Ver refeição'}
+                            >
+                              {photo ? (
+                                <img src={photo} alt={e.title ?? 'Foto'} loading="lazy" />
+                              ) : (
+                                <div className="rtl-card-ph" role="img" aria-label="Sem foto" />
+                              )}
+                            </button>
+                          ));
+                        })}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      {modal && <DayModal entries={[modal]} onClose={() => setModal(null)} />}
+    </>
   );
 }
 

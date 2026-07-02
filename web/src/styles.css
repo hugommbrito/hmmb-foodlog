@@ -974,6 +974,15 @@ button.cal-cell:hover {
   display: flex;
   align-items: flex-start;
   gap: var(--space-3);
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  padding: var(--space-3) var(--space-4);
+  box-shadow: var(--shadow-card);
+}
+.rtl-day-weekend { background: #f6f8fd; }
+@media (prefers-color-scheme: dark) {
+  .rtl-day-weekend { background: #27231a; }
 }
 .rtl-label {
   width: 52px;
@@ -1006,6 +1015,10 @@ button.cal-cell:hover {
   min-width: 800px;
 }
 @media (min-width: 900px) {
+  .rtl-wrap {
+    width: 90vw;
+    margin-left: calc((90vw - 100%) / -2);
+  }
   .rtl-content { overflow-x: visible; }
   .rtl-inner { min-width: 0; }
 }
@@ -1035,6 +1048,11 @@ button.cal-cell:hover {
   height: 13px;
   background: var(--muted);
 }
+.rtl-tick-active .rtl-tick-mark {
+  height: 10px;
+  width: 25px;
+  background: var(--accent);
+}
 .rtl-hour-label {
   position: absolute;
   top: 4px;
@@ -1058,7 +1076,7 @@ button.cal-cell:hover {
 }
 .rtl-card {
   appearance: none;
-  border: 1.5px solid var(--accent);
+  border: 2.5px solid var(--accent);
   background: var(--card);
   padding: 0;
   width: 66px;
@@ -1068,10 +1086,11 @@ button.cal-cell:hover {
   cursor: pointer;
   position: relative;
   display: block;
-  transition: transform 0.12s;
+  transition: transform 0.12s ease;
+  will-change: transform;
   z-index: 0;
 }
-.rtl-card:hover { transform: scale(1.7); z-index: 10; }
+.rtl-card:hover { transform: scale(2.7); z-index: 12; }
 .rtl-card img {
   width: 100%;
   height: 100%;
