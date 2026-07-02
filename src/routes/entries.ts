@@ -479,8 +479,8 @@ export async function entriesRoutes(app: FastifyInstance): Promise<void> {
     }
 
     description = description.trim();
-    if (!description) {
-      return reply.status(400).send({ error: 'Description is required' });
+    if (!description && photos.length === 0) {
+      return reply.status(400).send({ error: 'Description or at least one photo is required' });
     }
 
     // Optional created_at: a valid ISO 8601 instant, never in the future (60s skew

@@ -516,6 +516,17 @@ button.link.danger { color: var(--danger); }
 
 /* Manual entry (text → AI segregation) */
 .new-entry { padding: var(--space-2) var(--space-3); font-size: 0.9rem; white-space: nowrap; }
+@media (max-width: 480px) {
+  .new-entry {
+    position: fixed;
+    bottom: 20px;
+    right: var(--space-4);
+    z-index: 20;
+    border-radius: var(--radius-pill);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, .25);
+    padding: var(--space-3) var(--space-4);
+  }
+}
 .manual-form {
   background: var(--card);
   border: 1px solid var(--border);

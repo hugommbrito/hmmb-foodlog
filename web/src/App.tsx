@@ -1113,7 +1113,7 @@ function Review({ onLogout }: { onLogout: () => void }) {
   // (SP-local) day if it differs from the one shown, else refetch the current day.
   // Re-throws on failure so the form can show the error and stay open.
   const handleCreateManual = useCallback(
-    async (input: { description: string; createdAt?: string; photos?: File[] }) => {
+    async (input: { description?: string; createdAt?: string; photos?: File[] }) => {
       try {
         const view = await createManualEntry(input);
         setShowManual(false);
@@ -1355,7 +1355,7 @@ function ManualEntryForm({
   onSubmit,
   onCancel,
 }: {
-  onSubmit: (input: { description: string; createdAt?: string; photos?: File[] }) => Promise<void>;
+  onSubmit: (input: { description?: string; createdAt?: string; photos?: File[] }) => Promise<void>;
   onCancel: () => void;
 }) {
   const [description, setDescription] = useState('');
@@ -1364,9 +1364,10 @@ function ManualEntryForm({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const hasContent = description.trim().length > 0 || photos.length > 0;
+
   const submit = async () => {
-    const desc = description.trim();
-    if (!desc || busy) return;
+    if (!hasContent || busy) return;
     setBusy(true);
     setError(null);
     try {
@@ -1374,6 +1375,7 @@ function ManualEntryForm({
       // (-03:00 — Brazil has no DST since 2019) so the instant is correct regardless
       // of the device timezone. Empty → omit so the backend's DEFAULT now() applies.
       const createdAt = when ? new Date(`${when}:00-03:00`).toISOString() : undefined;
+      const desc = description.trim() || undefined;
       await onSubmit({ description: desc, createdAt, photos });
     } catch (err) {
       setError((err as Error).message);
@@ -1386,13 +1388,22 @@ function ManualEntryForm({
     <div className="manual-form">
       <h2>Novo registro manual</h2>
       <label>
-        O que você comeu?
+        Foto
+        <input
+          type="file"
+          accept="image/*"
+          multiple
+          autoFocus
+          onChange={(e) => setPhotos(e.target.files ? Array.from(e.target.files) : [])}
+        />
+      </label>
+      <label>
+        O que você comeu? <span style={{ fontWeight: 400 }}>(opcional)</span>
         <textarea
           value={description}
           onChange={(e) => setDescription(e.target.value)}
           placeholder="Ex.: 2 ovos mexidos, uma fatia de pão integral e um café com leite"
           rows={3}
-          autoFocus
         />
       </label>
       <label>
@@ -1404,18 +1415,9 @@ function ManualEntryForm({
           onChange={(e) => setWhen(e.target.value)}
         />
       </label>
-      <label>
-        Foto (opcional)
-        <input
-          type="file"
-          accept="image/*"
-          multiple
-          onChange={(e) => setPhotos(e.target.files ? Array.from(e.target.files) : [])}
-        />
-      </label>
       {error && <div className="banner error">{error}</div>}
       <div className="manual-actions">
-        <button type="button" onClick={() => void submit()} disabled={!description.trim() || busy}>
+        <button type="button" onClick={() => void submit()} disabled={!hasContent || busy}>
           {busy ? 'Analisando…' : 'Criar e analisar'}
         </button>
         <button type="button" className="link" onClick={onCancel} disabled={busy}>

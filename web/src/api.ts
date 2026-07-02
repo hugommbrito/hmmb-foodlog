@@ -99,12 +99,12 @@ export function reanalyzeEntry(id: string, payload: ReanalyzeRequest): Promise<E
 // browser fills the multipart boundary. Synchronous on the backend (up to ~timeout):
 // the AI segregates the foods and estimates weights/macros. Returns the new entry view.
 export function createManualEntry(input: {
-  description: string;
+  description?: string;
   createdAt?: string; // ISO 8601 instant
   photos?: File[];
 }): Promise<EntryAnalysisView> {
   const form = new FormData();
-  form.append('description', input.description);
+  if (input.description) form.append('description', input.description);
   if (input.createdAt) {
     form.append('created_at', input.createdAt);
   }
