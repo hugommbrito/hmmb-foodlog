@@ -3,7 +3,7 @@
 > Mapa único de **o que já foi feito × o que falta**, com ordem sugerida por sessão.
 > Fonte da verdade do escopo: [SPEC.md](../specs/spec-foodlog/SPEC.md) (CAP-1 … CAP-10).
 > Dívida técnica diferida vive em [deferred-work.md](./deferred-work.md).
-> Atualizado: 2026-06-26 (CAP-8 entregue — busca no histórico por nome de alimento).
+> Atualizado: 2026-06-26 (CAP-6 entregue — relatório semanal de padrões; CAP-5 áudio descartada).
 
 ---
 
@@ -21,6 +21,7 @@
 | CAP-7b | Análise de padrões por IA na view do nutricionista (lazy + cache no link) | [spec-cap-7b-nutritionist-pattern-analysis.md](./spec-cap-7b-nutritionist-pattern-analysis.md) |
 | CAP-8 | Busca no histórico por nome de alimento (ILIKE, filtro client-side no nutricionista) | [spec-cap-8-food-search.md](./spec-cap-8-food-search.md) |
 | CAP-10 | Autenticação por número de WhatsApp (sem login) | [foundation](./spec-foundation-whatsapp-capture-ai.md) |
+| CAP-6 | Relatório semanal de padrões comportamentais (lazy + cache, rolling 7d) | [spec-cap-6-weekly-pattern-report.md](./spec-cap-6-weekly-pattern-report.md) |
 
 **Trabalho de suporte entregue (fora das CAPs):** auditoria inbound ([spec-audit-request-log.md](./spec-audit-request-log.md)), auditoria outbound ([spec-audit-outbound-logging.md](./spec-audit-outbound-logging.md)), correções do card web + delete + totais ([spec-web-card-fixes-delete-totals.md](./spec-web-card-fixes-delete-totals.md)).
 
@@ -28,16 +29,7 @@
 
 ## 🔲 A fazer — ordem sugerida
 
-> A ordem abaixo equilibra **valor × esforço × dependências**. É uma sugestão — reordene se a prioridade mudar. Cada item é uma sessão (criar spec → implementar → review).
-
-### 1. CAP-6 — Relatório semanal de padrões comportamentais
-- **Por quê agora:** já existe CAP-9 — se beneficia dos dados de contexto acumulados (correlação contexto × escolhas). **Reusar o motor `analyzePatterns`** já criado na CAP-7b (`src/services/ai.ts`), expondo-o no relatório semanal autenticado.
-- **Toca:** geração automática semanal, **somente no web app** (sem entrega ativa por WhatsApp/e-mail — constraint do SPEC).
-- **Success (SPEC):** ≥3 observações de padrão (horários recorrentes, variação de macros por tipo de dia, correlações contexto × escolha).
-
-### 3. CAP-5 (áudio) — Correção via WhatsApp por **áudio**
-- **Por quê por último:** introduz **nova dependência externa** (Claude não transcreve áudio nativo → precisa de Whisper/Groq + chave + custo). Reusa o `processCorrection` já existente (`src/routes/webhook.ts`).
-- **Implementar:** extrair `audio.audioUrl` do payload Z-API → baixar → transcrever → alimentar o pipeline de correção da CAP-5 texto.
+> Todas as CAPs do escopo original estão concluídas. Itens abaixo são melhorias ou extensões identificadas durante o desenvolvimento.
 
 ---
 

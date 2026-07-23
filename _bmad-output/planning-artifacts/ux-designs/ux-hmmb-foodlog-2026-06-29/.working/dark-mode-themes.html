@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FoodLog — Dark Mode · Ocean Blue</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #dde2e8; padding: 24px; }
+  h1 { font-size: 1rem; color: #333; margin-bottom: 6px; }
+  p.note { font-size: 0.78rem; color: #666; margin-bottom: 24px; }
+
+  /* Grid: light left, dark right, 4 rows */
+  .pair-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 16px; }
+  @media (max-width: 700px) { .pair-grid { grid-template-columns: 1fr; } }
+
+  .pair-row { display: contents; }
+  .pair-label {
+    grid-column: 1 / -1; margin-top: 20px; margin-bottom: 4px;
+    font-size: 0.7rem; font-weight: 700; letter-spacing: 0.06em;
+    text-transform: uppercase; color: #666;
+  }
+  .pair-sublabel { font-size: 0.68rem; color: #888; margin-top: 2px; font-weight: 400; letter-spacing: 0; text-transform: none; }
+
+  .theme { border-radius: 14px; overflow: hidden; box-shadow: 0 2px 12px rgba(0,0,0,.15); }
+  .theme-label {
+    padding: 6px 12px; font-size: 0.68rem; font-weight: 600; letter-spacing: 0.04em;
+    text-transform: uppercase; display: flex; justify-content: space-between; align-items: center;
+  }
+  .theme-label span { font-weight: 400; opacity: 0.7; font-size: 0.66rem; letter-spacing: 0; text-transform: none; }
+  .theme-body { padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+
+  /* nav */
+  .fake-tabs { display: flex; gap: 2px; padding: 6px 0; border-bottom: 1px solid var(--border); }
+  .fake-tab { background: none; border: none; padding: 5px 8px; font-size: 0.75rem; cursor: default; color: var(--muted); border-bottom: 2px solid transparent; font-family: inherit; }
+  .fake-tab.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+
+  /* mini summary */
+  .mini-summary {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 8px; padding: 8px 12px;
+    display: flex; justify-content: space-between; align-items: center; font-size: 0.78rem;
+  }
+  .mini-summary .dots { display: flex; gap: 4px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; }
+  .dot-filled { background: var(--accent); }
+  .dot-warn { background: var(--warning); }
+  .dot-empty { background: var(--border); }
+
+  /* card */
+  .card {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 10px; overflow: hidden;
+    display: flex; border-left: 4px solid var(--accent);
+  }
+  .card-photo { width: 72px; height: 72px; flex: 0 0 72px; background: var(--surface2); display: flex; align-items: center; justify-content: center; }
+  .card-photo svg { opacity: 0.25; }
+  .card-body { padding: 9px 11px; flex: 1; min-width: 0; }
+  .card-title { font-size: 0.83rem; font-weight: 600; color: var(--text); }
+  .card-meta { font-size: 0.72rem; color: var(--muted); margin-top: 2px; }
+  .card-actions { margin-top: 7px; display: flex; gap: 6px; align-items: center; }
+  .btn-primary { background: var(--accent); color: #fff; border: none; border-radius: 6px; padding: 5px 12px; font-size: 0.78rem; font-weight: 600; cursor: default; }
+  .btn-link { background: none; border: none; color: var(--muted); font-size: 0.78rem; cursor: default; padding: 0; }
+  .btn-danger { background: none; border: none; color: var(--danger); font-size: 0.78rem; cursor: default; padding: 0; }
+
+  /* chips */
+  .chips { display: flex; gap: 5px; }
+  .chip { border: 1px solid var(--border); background: none; color: var(--muted); border-radius: 999px; padding: 2px 10px; font-size: 0.72rem; cursor: default; }
+  .chip.active { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+
+  /* photo wall */
+  .photo-wall { display: grid; grid-template-columns: repeat(3, 1fr); gap: 2px; border-radius: 6px; overflow: hidden; }
+  .pw-cell { aspect-ratio: 1; background: var(--surface2); display: flex; align-items: flex-end; padding: 3px; }
+  .pw-cell:nth-child(2) { background: var(--accent-surface); }
+  .pw-cell:nth-child(5) { background: color-mix(in srgb, var(--accent) 25%, var(--surface2)); }
+  .pw-overlay { font-size: 0.55rem; color: rgba(255,255,255,.9); background: rgba(0,0,0,.4); border-radius: 2px; padding: 1px 3px; }
+
+  /* ======================== LIGHT: Ocean Blue ======================== */
+  .light {
+    --bg: #f7f9fb; --card: #ffffff; --text: #1a1c1e; --muted: #6b7280;
+    --border: #e2e8f0; --accent: #0284c7; --accent-surface: #e0f2fe;
+    --surface2: #e8edf2; --warning: #f59e0b; --danger: #dc2626;
+    background: var(--bg);
+  }
+  .light .theme-label { background: #0284c7; color: #fff; }
+
+  /* ======================== DARK VARIANTS ======================== */
+
+  /* D1: Slate Deep — quase preto azulado, accent claro */
+  .dark-1 {
+    --bg: #0f1923; --card: #1a2636; --text: #e8edf2; --muted: #8b9ab0;
+    --border: #253447; --accent: #38bdf8; --accent-surface: #0c2a3e;
+    --surface2: #243040; --warning: #fbbf24; --danger: #f87171;
+    background: var(--bg);
+  }
+  .dark-1 .theme-label { background: #1a2636; color: #e8edf2; border-bottom: 1px solid #253447; }
+  .dark-1 .theme-label span { color: #8b9ab0; }
+
+  /* D2: Charcoal Blue — cinza escuro, accent original */
+  .dark-2 {
+    --bg: #1c1f26; --card: #252933; --text: #e4e7ec; --muted: #8a92a6;
+    --border: #323847; --accent: #0ea5e9; --accent-surface: #0c2a40;
+    --surface2: #2e3341; --warning: #fbbf24; --danger: #f87171;
+    background: var(--bg);
+  }
+  .dark-2 .theme-label { background: #252933; color: #e4e7ec; border-bottom: 1px solid #323847; }
+  .dark-2 .theme-label span { color: #8a92a6; }
+
+  /* D3: Navy Warm — navy profundo, accent brilhante */
+  .dark-3 {
+    --bg: #131c2e; --card: #1c2840; --text: #dde8f5; --muted: #7a8daa;
+    --border: #253352; --accent: #60a5fa; --accent-surface: #0f2042;
+    --surface2: #223050; --warning: #fbbf24; --danger: #f87171;
+    background: var(--bg);
+  }
+  .dark-3 .theme-label { background: #1c2840; color: #dde8f5; border-bottom: 1px solid #253352; }
+  .dark-3 .theme-label span { color: #7a8daa; }
+
+  /* D4: Dark Neutral — neutro escuro, accent médio (mais fácil de implementar via prefers-color-scheme) */
+  .dark-4 {
+    --bg: #18181b; --card: #232329; --text: #f4f4f5; --muted: #8b8b99;
+    --border: #3a3a46; --accent: #2da6e4; --accent-surface: #0d2538;
+    --surface2: #2c2c34; --warning: #fbbf24; --danger: #f87171;
+    background: var(--bg);
+  }
+  .dark-4 .theme-label { background: #232329; color: #f4f4f5; border-bottom: 1px solid #3a3a46; }
+  .dark-4 .theme-label span { color: #8b8b99; }
+</style>
+</head>
+<body>
+
+<h1>FoodLog — Dark Mode · Ocean Blue</h1>
+<p class="note">Coluna esquerda: light (C) como referência. Coluna direita: variante dark. Accent do dark é sempre mais claro para manter WCAG AA em fundo escuro.</p>
+
+<div class="pair-grid">
+
+  <!-- ROW 1 -->
+  <div class="pair-label">D1 — Slate Deep <span class="pair-sublabel">bg #0f1923 · accent #38bdf8 (sky-400) · o mais escuro e "premium"</span></div>
+
+  <div class="theme light">
+    <div class="theme-label">Light C <span>referência</span></div>
+    <div class="theme-body">
+      <div class="fake-tabs">
+        <button class="fake-tab active">Revisão</button>
+        <button class="fake-tab">Painel</button>
+        <button class="fake-tab">Tags</button>
+      </div>
+      <div class="mini-summary">
+        <span style="font-size:0.76rem; font-weight:600; color:var(--text)">1.840 kcal · P 94g</span>
+        <div class="dots">
+          <div class="dot dot-filled"></div><div class="dot dot-filled"></div>
+          <div class="dot dot-warn"></div><div class="dot dot-filled"></div>
+          <div class="dot dot-filled"></div><div class="dot dot-empty"></div>
+          <div class="dot dot-empty"></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-photo"><svg width="24" height="24" fill="none" stroke="#999" stroke-width="1.5" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M3 9l4-4 4 4 4-5 4 5"/></svg></div>
+        <div class="card-body">
+          <div class="card-title">Frango grelhado com arroz</div>
+          <div class="card-meta">12:34 · 620 kcal · P 48g</div>
+          <div class="card-actions">
+            <button class="btn-primary">Aceitar</button>
+            <button class="btn-link">Corrigir</button>
+            <button class="btn-danger">Excluir</button>
+          </div>
+        </div>
+      </div>
+      <div class="chips">
+        <div class="chip active">casa</div>
+        <div class="chip">restaurante</div>
+        <div class="chip">trabalho</div>
+      </div>
+      <div class="photo-wall">
+        <div class="pw-cell"><span class="pw-overlay">07:30 · 320kcal</span></div>
+        <div class="pw-cell"><span class="pw-overlay">12:34 · 620kcal</span></div>
+        <div class="pw-cell"><span class="pw-overlay">15:10 · 180kcal</span></div>
+        <div class="pw-cell"></div>
+        <div class="pw-cell"><span class="pw-overlay">19:45 · 740kcal</span></div>
+        <div class="pw-cell"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="theme dark-1">
+    <div class="theme-label">Dark D1 — Slate Deep <span>bg #0f1923 · accent #38bdf8</span></div>
+    <div class="theme-body">
+      <div class="fake-tabs">
+        <button class="fake-tab active">Revisão</button>
+        <button class="fake-tab">Painel</button>
+        <button class="fake-tab">Tags</button>
+      </div>
+      <div class="mini-summary">
+        <span style="font-size:0.76rem; font-weight:600; color:var(--text)">1.840 kcal · P 94g</span>
+        <div class="dots">
+          <div class="dot dot-filled"></div><div class="dot dot-filled"></div>
+          <div class="dot dot-warn"></div><div class="dot dot-filled"></div>
+          <div class="dot dot-filled"></div><div class="dot dot-empty"></div>
+          <div class="dot dot-empty"></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-photo"><svg width="24" height="24" fill="none" stroke="#4a6070" stroke-width="1.5" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M3 9l4-4 4 4 4-5 4 5"/></svg></div>
+        <div class="card-body">
+          <div class="card-title">Frango grelhado com arroz</div>
+          <div class="card-meta">12:34 · 620 kcal · P 48g</div>
+          <div class="card-actions">
+            <button class="btn-primary">Aceitar</button>
+            <button class="btn-link">Corrigir</button>
+            <button class="btn-danger">Excluir</button>
+          </div>
+        </div>
+      </div>
+      <div class="chips">
+        <div class="chip active">casa</div>
+        <div class="chip">restaurante</div>
+        <div class="chip">trabalho</div>
+      </div>
+      <div class="photo-wall">
+        <div class="pw-cell"><span class="pw-overlay">07:30 · 320kcal</span></div>
+        <div class="pw-cell"><span class="pw-overlay">12:34 · 620kcal</span></div>
+        <div class="pw-cell"><span class="pw-overlay">15:10 · 180kcal</span></div>
+        <div class="pw-cell"></div>
+        <div class="pw-cell"><span class="pw-overlay">19:45 · 740kcal</span></div>
+        <div class="pw-cell"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ROW 2 -->
+  <div class="pair-label">D2 — Charcoal Blue <span class="pair-sublabel">bg #1c1f26 · accent #0ea5e9 (sky-500) · cinza neutro, mais familiar</span></div>
+
+  <div class="theme light">
+    <div class="theme-label">Light C <span>referência</span></div>
+    <div class="theme-body">
+      <div class="fake-tabs">
+        <button class="fake-tab active">Revisão</button>
+        <button class="fake-tab">Painel</button>
+        <button class="fake-tab">Tags</button>
+      </div>
+      <div class="mini-summary">
+        <span style="font-size:0.76rem; font-weight:600; color:var(--text)">1.840 kcal · P 94g</span>
+        <div class="dots">
+          <div class="dot dot-filled"></div><div class="dot dot-filled"></div>
+          <div class="dot dot-warn"></div><div class="dot dot-filled"></div>
+          <div class="dot dot-filled"></div><div class="dot dot-empty"></div>
+          <div class="dot dot-empty"></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-photo"><svg width="24" height="24" fill="none" stroke="#999" stroke-width="1.5" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M3 9l4-4 4 4 4-5 4 5"/></svg></div>
+        <div class="card-body">
+          <div class="card-title">Frango grelhado com arroz</div>
+          <div class="card-meta">12:34 · 620 kcal · P 48g</div>
+          <div class="card-actions">
+            <button class="btn-primary">Aceitar</button>
+            <button class="btn-link">Corrigir</button>
+            <button class="btn-danger">Excluir</button>
+          </div>
+        </div>
+      </div>
+      <div class="chips">
+        <div class="chip active">casa</div>
+        <div class="chip">restaurante</div>
+        <div class="chip">trabalho</div>
+      </div>
+      <div class="photo-wall">
+        <div class="pw-cell"><span class="pw-overlay">07:30 · 320kcal</span></div>
+        <div class="pw-cell"><span class="pw-overlay">12:34 · 620kcal</span></div>
+        <div class="pw-cell"><span class="pw-overlay">15:10 · 180kcal</span></div>
+        <div class="pw-cell"></div>
+        <div class="pw-cell"><span class="pw-overlay">19:45 · 740kcal</span></div>
+        <div class="pw-cell"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="theme dark-2">
+    <div class="theme-label">Dark D2 — Charcoal Blue <span>bg #1c1f26 · accent #0ea5e9</span></div>
+    <div class="theme-body">
+      <div class="fake-tabs">
+        <button class="fake-tab active">Revisão</button>
+        <button class="fake-tab">Painel</button>
+        <button class="fake-tab">Tags</button>
+      </div>
+      <div class="mini-summary">
+        <span style="font-size:0.76rem; font-weight:600; color:var(--text)">1.840 kcal · P 94g</span>
+        <div class="dots">
+          <div class="dot dot-filled"></div><div class="dot dot-filled"></div>
+          <div class="dot dot-warn"></div><div class="dot dot-filled"></div>
+          <div class="dot dot-filled"></div><div class="dot dot-empty"></div>
+          <div class="dot dot-empty"></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-photo"><svg width="24" height="24" fill="none" stroke="#4a5060" stroke-width="1.5" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M3 9l4-4 4 4 4-5 4 5"/></svg></div>
+        <div class="card-body">
+          <div class="card-title">Frango grelhado com arroz</div>
+          <div class="card-meta">12:34 · 620 kcal · P 48g</div>
+          <div class="card-actions">
+            <button class="btn-primary">Aceitar</button>
+            <button class="btn-link">Corrigir</button>
+            <button class="btn-danger">Excluir</button>
+          </div>
+        </div>
+      </div>
+      <div class="chips">
+        <div class="chip active">casa</div>
+        <div class="chip">restaurante</div>
+        <div class="chip">trabalho</div>
+      </div>
+      <div class="photo-wall">
+        <div class="pw-cell"><span class="pw-overlay">07:30 · 320kcal</span></div>
+        <div class="pw-cell"><span class="pw-overlay">12:34 · 620kcal</span></div>
+        <div class="pw-cell"><span class="pw-overlay">15:10 · 180kcal</span></div>
+        <div class="pw-cell"></div>
+        <div class="pw-cell"><span class="pw-overlay">19:45 · 740kcal</span></div>
+        <div class="pw-cell"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ROW 3 -->
+  <div class="pair-label">D3 — Navy Warm <span class="pair-sublabel">bg #131c2e · accent #60a5fa (blue-400) · navy profundo, o mais "azul"</span></div>
+
+  <div class="theme light">
+    <div class="theme-label">Light C <span>referência</span></div>
+    <div class="theme-body">
+      <div class="fake-tabs">
+        <button class="fake-tab active">Revisão</button>
+        <button class="fake-tab">Painel</button>
+        <button class="fake-tab">Tags</button>
+      </div>
+      <div class="mini-summary">
+        <span style="font-size:0.76rem; font-weight:600; color:var(--text)">1.840 kcal · P 94g</span>
+        <div class="dots">
+          <div class="dot dot-filled"></div><div class="dot dot-filled"></div>
+          <div class="dot dot-warn"></div><div class="dot dot-filled"></div>
+          <div class="dot dot-filled"></div><div class="dot dot-empty"></div>
+          <div class="dot dot-empty"></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-photo"><svg width="24" height="24" fill="none" stroke="#999" stroke-width="1.5" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M3 9l4-4 4 4 4-5 4 5"/></svg></div>
+        <div class="card-body">
+          <div class="card-title">Frango grelhado com arroz</div>
+          <div class="card-meta">12:34 · 620 kcal · P 48g</div>
+          <div class="card-actions">
+            <button class="btn-primary">Aceitar</button>
+            <button class="btn-link">Corrigir</button>
+            <button class="btn-danger">Excluir</button>
+          </div>
+        </div>
+      </div>
+      <div class="chips">
+        <div class="chip active">casa</div>
+        <div class="chip">restaurante</div>
+        <div class="chip">trabalho</div>
+      </div>
+      <div class="photo-wall">
+        <div class="pw-cell"><span class="pw-overlay">07:30 · 320kcal</span></div>
+        <div class="pw-cell"><span class="pw-overlay">12:34 · 620kcal</span></div>
+        <div class="pw-cell"><span class="pw-overlay">15:10 · 180kcal</span></div>
+        <div class="pw-cell"></div>
+        <div class="pw-cell"><span class="pw-overlay">19:45 · 740kcal</span></div>
+        <div class="pw-cell"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="theme dark-3">
+    <div class="theme-label">Dark D3 — Navy Warm <span>bg #131c2e · accent #60a5fa</span></div>
+    <div class="theme-body">
+      <div class="fake-tabs">
+        <button class="fake-tab active">Revisão</button>
+        <button class="fake-tab">Painel</button>
+        <button class="fake-tab">Tags</button>
+      </div>
+      <div class="mini-summary">
+        <span style="font-size:0.76rem; font-weight:600; color:var(--text)">1.840 kcal · P 94g</span>
+        <div class="dots">
+          <div class="dot dot-filled"></div><div class="dot dot-filled"></div>
+          <div class="dot dot-warn"></div><div class="dot dot-filled"></div>
+          <div class="dot dot-filled"></div><div class="dot dot-empty"></div>
+          <div class="dot dot-empty"></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-photo"><svg width="24" height="24" fill="none" stroke="#2a3a56" stroke-width="1.5" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M3 9l4-4 4 4 4-5 4 5"/></svg></div>
+        <div class="card-body">
+          <div class="card-title">Frango grelhado com arroz</div>
+          <div class="card-meta">12:34 · 620 kcal · P 48g</div>
+          <div class="card-actions">
+            <button class="btn-primary">Aceitar</button>
+            <button class="btn-link">Corrigir</button>
+            <button class="btn-danger">Excluir</button>
+          </div>
+        </div>
+      </div>
+      <div class="chips">
+        <div class="chip active">casa</div>
+        <div class="chip">restaurante</div>
+        <div class="chip">trabalho</div>
+      </div>
+      <div class="photo-wall">
+        <div class="pw-cell"><span class="pw-overlay">07:30 · 320kcal</span></div>
+        <div class="pw-cell"><span class="pw-overlay">12:34 · 620kcal</span></div>
+        <div class="pw-cell"><span class="pw-overlay">15:10 · 180kcal</span></div>
+        <div class="pw-cell"></div>
+        <div class="pw-cell"><span class="pw-overlay">19:45 · 740kcal</span></div>
+        <div class="pw-cell"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ROW 4 -->
+  <div class="pair-label">D4 — Dark Neutral <span class="pair-sublabel">bg #18181b (zinc-900) · accent #2da6e4 · mais fácil de implementar com prefers-color-scheme</span></div>
+
+  <div class="theme light">
+    <div class="theme-label">Light C <span>referência</span></div>
+    <div class="theme-body">
+      <div class="fake-tabs">
+        <button class="fake-tab active">Revisão</button>
+        <button class="fake-tab">Painel</button>
+        <button class="fake-tab">Tags</button>
+      </div>
+      <div class="mini-summary">
+        <span style="font-size:0.76rem; font-weight:600; color:var(--text)">1.840 kcal · P 94g</span>
+        <div class="dots">
+          <div class="dot dot-filled"></div><div class="dot dot-filled"></div>
+          <div class="dot dot-warn"></div><div class="dot dot-filled"></div>
+          <div class="dot dot-filled"></div><div class="dot dot-empty"></div>
+          <div class="dot dot-empty"></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-photo"><svg width="24" height="24" fill="none" stroke="#999" stroke-width="1.5" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M3 9l4-4 4 4 4-5 4 5"/></svg></div>
+        <div class="card-body">
+          <div class="card-title">Frango grelhado com arroz</div>
+          <div class="card-meta">12:34 · 620 kcal · P 48g</div>
+          <div class="card-actions">
+            <button class="btn-primary">Aceitar</button>
+            <button class="btn-link">Corrigir</button>
+            <button class="btn-danger">Excluir</button>
+          </div>
+        </div>
+      </div>
+      <div class="chips">
+        <div class="chip active">casa</div>
+        <div class="chip">restaurante</div>
+        <div class="chip">trabalho</div>
+      </div>
+      <div class="photo-wall">
+        <div class="pw-cell"><span class="pw-overlay">07:30 · 320kcal</span></div>
+        <div class="pw-cell"><span class="pw-overlay">12:34 · 620kcal</span></div>
+        <div class="pw-cell"><span class="pw-overlay">15:10 · 180kcal</span></div>
+        <div class="pw-cell"></div>
+        <div class="pw-cell"><span class="pw-overlay">19:45 · 740kcal</span></div>
+        <div class="pw-cell"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="theme dark-4">
+    <div class="theme-label">Dark D4 — Neutral <span>bg #18181b · accent #2da6e4</span></div>
+    <div class="theme-body">
+      <div class="fake-tabs">
+        <button class="fake-tab active">Revisão</button>
+        <button class="fake-tab">Painel</button>
+        <button class="fake-tab">Tags</button>
+      </div>
+      <div class="mini-summary">
+        <span style="font-size:0.76rem; font-weight:600; color:var(--text)">1.840 kcal · P 94g</span>
+        <div class="dots">
+          <div class="dot dot-filled"></div><div class="dot dot-filled"></div>
+          <div class="dot dot-warn"></div><div class="dot dot-filled"></div>
+          <div class="dot dot-filled"></div><div class="dot dot-empty"></div>
+          <div class="dot dot-empty"></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-photo"><svg width="24" height="24" fill="none" stroke="#3a3a46" stroke-width="1.5" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M3 9l4-4 4 4 4-5 4 5"/></svg></div>
+        <div class="card-body">
+          <div class="card-title">Frango grelhado com arroz</div>
+          <div class="card-meta">12:34 · 620 kcal · P 48g</div>
+          <div class="card-actions">
+            <button class="btn-primary">Aceitar</button>
+            <button class="btn-link">Corrigir</button>
+            <button class="btn-danger">Excluir</button>
+          </div>
+        </div>
+      </div>
+      <div class="chips">
+        <div class="chip active">casa</div>
+        <div class="chip">restaurante</div>
+        <div class="chip">trabalho</div>
+      </div>
+      <div class="photo-wall">
+        <div class="pw-cell"><span class="pw-overlay">07:30 · 320kcal</span></div>
+        <div class="pw-cell"><span class="pw-overlay">12:34 · 620kcal</span></div>
+        <div class="pw-cell"><span class="pw-overlay">15:10 · 180kcal</span></div>
+        <div class="pw-cell"></div>
+        <div class="pw-cell"><span class="pw-overlay">19:45 · 740kcal</span></div>
+        <div class="pw-cell"></div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<p style="margin-top:28px; font-size:0.73rem; color:#777; max-width:660px;">
+  <strong>Nota de escopo:</strong> O PRD marca dark mode como non-goal para o MVP ("Não implementar dark mode nesta iteração").
+  Se você escolher uma variante dark aqui, o escopo do MVP se expande — o design system precisará de dois conjuntos de tokens
+  e o CSS precisará de <code>@media (prefers-color-scheme: dark)</code>. D4 (Neutral) é o mais simples de adicionar pois
+  o fundo é zinc puro sem matiz azulado, tornando os overrides mínimos.
+</p>
+</body>
+</html>

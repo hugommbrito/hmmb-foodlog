@@ -1,5 +1,11 @@
 # Deferred Work
 
+## Story 3.2 — Vista Parede de Fotos (encontrado na revisão)
+
+- **Focus return após fechar modal**: ao fechar `PhotoWallModal`, o foco retorna para `document.body` em vez do botão de célula que abriu o modal. Impacta usuários de teclado/leitores de tela. Correto seria salvar `document.activeElement` antes de abrir e restaurar no `onClose`.
+
+
+
 Capacidades do SPEC-foodlog diferidas para implementação após a fundação (CAP-10 + CAP-1 + CAP-2).
 
 ## Melhorias técnicas diferidas — Spec B (encontradas na revisão)
@@ -8,6 +14,11 @@ Capacidades do SPEC-foodlog diferidas para implementação após a fundação (C
 - **sendTextMessage sem tratamento de erro**: `src/routes/webhook.ts` — se `sendTextMessage` lançar exceção, o Z-API recebe 500 e pode retentar o webhook. Adicionar try/catch ao redor da chamada como pre-existing fix da Spec A.
 - **Extração JSON do Claude**: abordagem `indexOf/lastIndexOf` pode falhar se Claude adicionar prosa com `}` após o JSON. Considerar brace-depth tracking em `src/services/ai.ts` se forem observadas falhas de parse em produção.
 - **Limite 5MB por imagem para Anthropic**: fotos grandes do R2 podem exceder o limite da API e queimar retries. Adicionar guard de tamanho em `fetchImageAsBase64` (`src/services/ai.ts`) se forem observados erros 400 da API.
+
+## Melhorias diferidas — Story 2.4 (encontradas na revisão)
+
+- **Filtros não resetam ao navegar por ponto de histórico**: clicar num ponto de histórico chama `setDate()` mas não reseta `tagFilter` nem `sortDir`. Um usuário com filtro de tag ativo pode ver lista aparentemente vazia no dia destino. Decidir se navegar por ponto deve limpar filtros (mesma questão existe no date picker).
+- **`sevenDaysBefore` sem guard para `dateStr` inválido**: se `todayLocal()` produzir string malformada, `new Date('' + 'T12:00:00')` resulta em `Invalid Date` e `d.toISOString()` lança `RangeError`. Low risk em produção, mas sem error boundary o efeito falha silenciosamente deixando `historyDots` vazio.
 
 ## Melhorias técnicas diferidas — CAP-1 REST endpoint (encontradas na revisão)
 
@@ -141,3 +152,50 @@ Entregue em `spec-cap-7b-nutritionist-pattern-analysis.md` (endpoint público la
 - **Concorrência sem lock no preenchimento do cache**: em `src/routes/share.ts` (`/shared/:token/patterns`) a checagem `analysis_json IS NULL` e o `UPDATE` não são atômicos. Dois primeiros-acessos simultâneos (endpoint **público sem auth**) disparam 2 chamadas pagas ao Claude (last-writer-wins no UPDATE). Já registrado como decisão consciente no spec (mesma classe de CAP-4/5). Mitigação se exposto: `UPDATE ... WHERE id=$2 AND analysis_json IS NULL` + re-SELECT, ou `SELECT ... FOR UPDATE` numa transação.
 - **Sem cap no tamanho do digest enviado ao Claude**: `analyzePatterns` (`src/services/ai.ts`) serializa **todas** as entradas do período sem limite de quantidade/caracteres. Período muito longo (ex.: 90 dias com muitas refeições) infla o prompt (custo/latência) e pode truncar a saída (`max_tokens: 1536`) → `JSON.parse` falha → 502 não-cacheado → reabrir re-tenta e paga de novo. Irrelevante no volume pessoal; se exposto/longo, capar nº de entradas/tamanho do digest e/ou detectar `stop_reason === 'max_tokens'`.
 - **Cache nunca invalida após mudança nas entradas do período**: decisão "Ask First" do spec — `analysis_json` é imutável até o link expirar. Se o dono corrigir/apagar/adicionar entradas depois da 1ª geração, o nutricionista vê uma análise desatualizada. Aceitável para período histórico/uso pessoal. Mitigação: limpar `analysis_json` ao mutar entradas cobertas, ou guardar um fingerprint das entradas e recomputar na divergência.
+
+## Epic 1 — Story 1.2: tab active state usa --text em vez de --accent
+
+- **`.tab.active` usa `color: var(--text)` e `border-bottom-color: var(--text)`** em vez de `var(--accent)`. Isso é inconsistente com `.chip.active` e `.seg-btn.active` que foram atualizados para `--accent` na Story 1.2. Em dark mode, a aba ativa fica com sublinhado quase branco, divergindo do padrão visual de seleção com accent. Corrigir na Story 2.1 (Reorganização da Navegação) junto com as demais mudanças do tab bar (5 abas, Auditoria fora do nav).
+
+## Epic 1 — Design System: valores sub-grade diferidos (encontrados na revisão da Story 1.1)
+
+Valores abaixo de `--space-1` (4px) e acima de `--space-6` (32px) que ficaram hardcoded em `web/src/styles.css`. Visualmente corretos e pre-existentes; migrar quando a escala de tokens for expandida.
+
+- **`2px` em elementos decorativos do calendário e card**: `.cal-cell { gap: 2px }`, `.cal-weekday { padding-bottom: 2px }`, `.card-head .totals { margin-top: 2px }` — valores sub-grade necessários para a densidade visual do calendário e alinhamento sutil de metadados.
+- **`1px` em pills compactas**: `.ctx-tag { padding: 1px var(--space-2) }`, `.pattern-cat { padding: 1px var(--space-2) }` — padding de 1px top/bottom intencional para pills de texto muito pequenas (`0.68rem`–`0.72rem`); `--space-1` (4px) as tornaria altas demais.
+- **`48px` em `.empty`**: `padding: 48px var(--space-4)` — valor acima de `--space-6` (32px); exige adicionar `--space-12: 48px` ou similar à escala se padronizado.
+- **`2px` em `.search-date-label`**: `padding: 4px 0 2px` — o `4px` já é `--space-1` (corrigível trivialmente); o `2px` inferior é sub-grade.
+- **`3px` em `.cal-thumbs img`**: `border-radius: 3px` — entre `--radius-sm` (6px) e nenhum raio; valor cosmético pré-existente.
+
+## UX diferida — Story 2.3 Mini-resumo de Macros (encontradas na revisão)
+
+- **Flash inicial de "Sem registros neste dia."**: `loading` inicializa como `false` e `entries` como `[]`, então entre o mount e o primeiro `setLoading(true)` do useEffect, o mini-resumo exibe por um frame o estado vazio. Padrão pré-existente na componente (mesmo comportamento em `"Nenhuma entrada neste dia."`). Mitigação se incomodar: inicializar `loading: true` ou adicionar flag `hasLoaded` (booleano que só vira true após o primeiro fetch completar).
+- **Totais do mini-resumo não refletem filtro de tag ativo**: por design, os macros exibidos são o total do dia sobre `entries` (não sobre `visible`). Quando o usuário filtra por tag, a lista mostra subset das entradas mas o mini-resumo continua exibindo o total do dia completo — sem UI signal indicando isso. Consideração UX futura: adicionar nota "total do dia" ou destacar o macros conforme os dos cards visíveis.
+
+## Melhorias diferidas — Story 4.1 Calendário Compartilhado (encontradas na revisão)
+
+- **`overflow` conta entries em vez de fotos com foto**: `dayEntries.length - thumbs.length` em `Share.tsx:CalendarView`. Quando um dia tem 5 entries mas só 2 com foto, `overflow = 3` — mas esses 3 "excedentes" incluem entries sem foto, não fotos ocultas. O `+3` exibido é enganoso. Fix correto: contar só entries com `photos[0]` válido antes do slice, e calcular overflow como `validPhotos.length - 3` quando positivo.
+- **Filtro de alimento distorce o ponto de acento no calendário**: `CalendarView` recebe `filteredEntries` (já filtradas por food name) e constrói `byDay` a partir desse subset. Se um dia tem 3 entries mas só 1 bate no filtro, e essa 1 entry não tem foto, o ponto de acento aparece sugerindo "dia sem foto" — quando na verdade o dia tem fotos em outras entries. Considerar usar `data.entries` diretamente para o grid do calendário (e `filteredEntries` só para a ListView).
+
+## UI diferida — Fix header/confiança/hover (encontrada na revisão adversarial)
+
+- **`conf-mid` indistinguível de `conf-none`**: `.conf-mid` usa `background: var(--neutral)` (cinza), igual a `.conf-none`. Pré-existente — afeta tanto o dot colorido nos alimentos quanto o badge `.conf-pct`. Considerar `--warning` (amarelo) para "médio" e reservar neutro só para "sem dado".
+- **`z-index: 1` no header pode suprimir futuros dropdowns/tooltips absolutamente posicionados**: se o header ganhar algum elemento com `position: absolute`, ele será cortado pelas `.tabs { z-index: 2 }`. Risco teórico; mitigação futura seria elevar o header para `z-index: 3` (acima das tabs) se um dropdown for adicionado.
+- **`aria-label` do `conf-border` anuncia "0.00" quando análise pendente**: `<div aria-label="Confiança da IA: 0.00">` quando `ai_confidence_overall === 0` informa estado pendente de modo enganoso a leitores de tela. Pré-existente; considerar `aria-label` condicional ("análise pendente" quando 0, "XX%" quando > 0).
+- **`.tl-thumb` tem dupla personalidade dentro/fora do wrapper**: a classe `.tl-thumb` se comporta diferente dependendo de estar dentro de `.tl-thumb-wrap` ou não (sizes, border-radius, flex overrideados). Se o wrapper for removido no futuro, o thumb-ph (placeholder) precisa ser testado.
+
+## UX diferida — Story 2.1 Tab Bar (encontradas na revisão adversarial)
+
+- **Footer "Auditoria" sem active state**: quando `tab === 'audit'`, nenhum botão no nav nem no footer fica visualmente ativo — UX gap menor. O design intencional é que Audit seja discreta, mas o usuário não tem confirmação visual de onde está. Considerar adicionar indicador discreto ao footer button quando `tab === 'audit'` (ex.: `font-weight: 600`).
+- **Guard genérico para `?tab=` params**: a leitura de URL só aceita `'audit'`; outros valores são silenciosamente ignorados. Se o pattern de URL-driven tab init for expandido a outros tabs no futuro, adicionar validação contra o union `Tab` para evitar divergência entre código e URL.
+- **`Dashboard` stub descarta `onLogout`**: o prop `_onLogout` é tipado mas ignorado intencionalmente no stub. Quando o conteúdo real do Dashboard for implementado no Epic 3, garantir que auth failures (401) chamem `onLogout` — seguindo o padrão dos demais componentes.
+
+## Melhorias técnicas diferidas — spec-vista-unificada-modos-cruzados-modal-dia (encontradas na revisão)
+
+Entregue em 2026-07-01 (CAP-2 + CAP-3 completos). Itens abaixo aceitos conscientemente.
+
+- **DayModal stale ao trocar período no Painel**: se o usuário abrir `DayModal` em `DashboardCalendarView` e depois trocar o período (7d/30d/90d) sem fechar, o modal permanece aberto com os dados do período anterior. Mitigação: `useEffect(() => { setDayModal(null); }, [slots])` em `DashboardCalendarView` — dispararia também ao carregar slots incrementalmente (loading→done), o que pode fechar o modal prematuramente; avaliar se monitorar um `periodKey` derivado de `slots[0]?.date` é mais apropriado.
+- **`start`/`end` em `DashboardCalendarView` não memoizados**: `start = slots[0]?.date ?? todayLocal()` e `end = slots[slots.length - 1]?.date ?? todayLocal()` são recalculados a cada render (linha ~690 de `App.tsx`). Como `monthsBetween` já é memoizado com `[start, end]`, o custo é marginal em uso pessoal; extrair ambos para o mesmo `useMemo` se o componente ganhar re-renders frequentes.
+- **`fmtDateBR` duplicada**: a função está definida em `App.tsx` (~linha 670) e novamente em `Share.tsx`. Mover para `calendarUtils.ts` na próxima oportunidade de limpeza.
+- **`DayModal` — array de focáveis obsoleto**: o mesmo padrão pré-existente do `PhotoWallModal` — `querySelectorAll` é chamado uma vez no `useEffect` de montagem; se o conteúdo mudar (raro aqui, pois a lista é estática), o array de foco fica desatualizado. Mitigação futura: derivar focáveis dinamicamente dentro do keydown handler.
+- **`isEmpty` no Painel trata todos-`error` como estado vazio**: a guarda `isEmpty` (`App.tsx`) ignora slots com `status: 'error'` — se todos os slots falharem, a UI mostra "sem entradas" em vez de mensagem de erro. Issue pré-existente, não introduzida nesta entrega.

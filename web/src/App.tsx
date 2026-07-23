@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   acceptEntry,
   clearToken,
@@ -32,6 +32,7 @@ import type {
   ShareLink,
   WeeklyReportPayload,
 } from './types';
+import { monthsBetween, monthCells, monthLabel } from './calendarUtils';
 
 // YYYY-MM-DD for "today", pinned to the same timezone the backend filters on
 // (America/Sao_Paulo) so the default day matches regardless of the device tz.
@@ -143,7 +144,7 @@ function textOn(hex: string): string {
   return lum > 0.6 ? '#111' : '#fff';
 }
 
-type Tab = 'review' | 'tags' | 'share' | 'audit' | 'report';
+type Tab = 'review' | 'dashboard' | 'tags' | 'share' | 'report' | 'audit';
 
 // Tag filter selection: a specific tag id, or the two synthetic options.
 type TagFilter = 'all' | 'none' | string;
@@ -157,10 +158,19 @@ export function App() {
   return <Shell onLogout={() => { clearToken(); setTokenState(null); }} />;
 }
 
-// Authenticated shell: tab bar switching between the daily review and the
-// request audit log. Both screens share the same Bearer token.
+// Authenticated shell: tab bar switching between the main views. Audit is
+// accessible via ?tab=audit query param or the footer link, not the main nav.
 function Shell({ onLogout }: { onLogout: () => void }) {
   const [tab, setTab] = useState<Tab>('review');
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('tab') === 'audit') {
+      setTab('audit');
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+  }, []);
+
   return (
     <div className="shell">
       <nav className="tabs">
@@ -169,6 +179,12 @@ function Shell({ onLogout }: { onLogout: () => void }) {
           onClick={() => setTab('review')}
         >
           Revisão
+        </button>
+        <button
+          className={tab === 'dashboard' ? 'tab active' : 'tab'}
+          onClick={() => setTab('dashboard')}
+        >
+          Painel
         </button>
         <button
           className={tab === 'tags' ? 'tab active' : 'tab'}
@@ -183,12 +199,6 @@ function Shell({ onLogout }: { onLogout: () => void }) {
           Compartilhar
         </button>
         <button
-          className={tab === 'audit' ? 'tab active' : 'tab'}
-          onClick={() => setTab('audit')}
-        >
-          Auditoria
-        </button>
-        <button
           className={tab === 'report' ? 'tab active' : 'tab'}
           onClick={() => setTab('report')}
         >
@@ -196,10 +206,649 @@ function Shell({ onLogout }: { onLogout: () => void }) {
         </button>
       </nav>
       {tab === 'review' && <Review onLogout={onLogout} />}
+      {tab === 'dashboard' && <Dashboard onLogout={onLogout} />}
       {tab === 'tags' && <TagsManager onLogout={onLogout} />}
       {tab === 'share' && <ShareManager onLogout={onLogout} />}
       {tab === 'audit' && <Audit onLogout={onLogout} />}
       {tab === 'report' && <WeeklyReportView onLogout={onLogout} />}
+      <footer style={{ textAlign: 'center', padding: 'var(--space-2)' }}>
+        <button
+          className="tab"
+          style={{ color: 'var(--muted)', fontSize: '0.8rem' }}
+          onClick={() => setTab('audit')}
+        >
+          Auditoria
+        </button>
+      </footer>
+    </div>
+  );
+}
+
+type DashboardSlot = { date: string; status: 'loading' | 'done' | 'error'; entries: EntryWithFoods[] };
+type DashboardPeriod = '7d' | '14d' | '30d' | 'custom';
+type DashboardView = 'photowall' | 'timeline' | 'calendar' | 'list';
+export type DayEntry = { id: string; created_at: string; photos: string[]; title: string | null; foods: FoodItem[] };
+
+function addDaysToDate(dateStr: string, days: number): string {
+  const d = new Date(dateStr + 'T12:00:00');
+  d.setDate(d.getDate() + days);
+  const y = d.getFullYear();
+  const mo = String(d.getMonth() + 1).padStart(2, '0');
+  const dy = String(d.getDate()).padStart(2, '0');
+  return `${y}-${mo}-${dy}`;
+}
+
+function getDashboardDays(period: DashboardPeriod, start: string, end: string): string[] {
+  const today = todayLocal();
+  if (period === 'custom') {
+    if (!start || !end || end < start) return [];
+    const diffDays = Math.floor(
+      (new Date(end + 'T12:00:00').getTime() - new Date(start + 'T12:00:00').getTime()) / 86_400_000
+    );
+    const count = Math.min(diffDays + 1, 90);
+    return Array.from({ length: count }, (_, i) => {
+      const d = new Date(start + 'T12:00:00');
+      d.setDate(d.getDate() + i);
+      const y = d.getFullYear();
+      const mo = String(d.getMonth() + 1).padStart(2, '0');
+      const dy = String(d.getDate()).padStart(2, '0');
+      return `${y}-${mo}-${dy}`;
+    }).filter((d) => d <= today);
+  }
+  const n = period === '7d' ? 7 : period === '14d' ? 14 : 30;
+  return Array.from({ length: n }, (_, i) => {
+    const d = new Date(today + 'T12:00:00');
+    d.setDate(d.getDate() - (n - 1 - i));
+    const y = d.getFullYear();
+    const mo = String(d.getMonth() + 1).padStart(2, '0');
+    const dy = String(d.getDate()).padStart(2, '0');
+    return `${y}-${mo}-${dy}`;
+  });
+}
+
+function Dashboard({ onLogout }: { onLogout: () => void }) {
+  const [period, setPeriod] = useState<DashboardPeriod>('7d');
+  const [customStart, setCustomStart] = useState<string>(todayLocal());
+  const [customEnd, setCustomEnd] = useState<string>(todayLocal());
+  const [view, setView] = useState<DashboardView>('photowall');
+  const [slots, setSlots] = useState<DashboardSlot[]>([]);
+  const [tags, setTags] = useState<ContextTag[]>([]);
+
+  useEffect(() => {
+    fetchTags()
+      .then(setTags)
+      .catch((err) => { if (err instanceof UnauthorizedError) onLogout(); });
+  }, [onLogout]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loggedOut = { current: false };
+    const days = getDashboardDays(period, customStart, customEnd);
+    setSlots(days.map((d) => ({ date: d, status: 'loading', entries: [] })));
+    days.forEach((d) => {
+      fetchEntries(d)
+        .then((entries) => {
+          if (cancelled) return;
+          setSlots((prev) => prev.map((s) => s.date === d ? { ...s, status: 'done', entries } : s));
+        })
+        .catch((err) => {
+          if (cancelled) return;
+          if (err instanceof UnauthorizedError) {
+            if (!loggedOut.current) { loggedOut.current = true; onLogout(); }
+            return;
+          }
+          setSlots((prev) => prev.map((s) => s.date === d ? { ...s, status: 'error', entries: [] } : s));
+        });
+    });
+    return () => { cancelled = true; };
+  }, [period, customStart, customEnd, onLogout]);
+
+  const isEmpty = slots.length > 0
+    && slots.every((s) => s.status !== 'loading')
+    && slots.every((s) => s.entries.length === 0);
+  const today = todayLocal();
+
+  const handleEndChange = (newEnd: string) => {
+    const maxEnd = addDaysToDate(customStart, 89);
+    setCustomEnd(newEnd > maxEnd ? maxEnd : newEnd);
+  };
+
+  return (
+    <div className="dashboard">
+      <div className="period-chips">
+        {(['7d', '14d', '30d', 'custom'] as const).map((p) => (
+          <button
+            key={p}
+            className={`chip${period === p ? ' active' : ''}`}
+            onClick={() => setPeriod(p)}
+          >
+            {p === '7d' ? '7 dias' : p === '14d' ? '14 dias' : p === '30d' ? '30 dias' : 'Personalizado'}
+          </button>
+        ))}
+      </div>
+      {period === 'custom' && (
+        <div className="dashboard-custom-dates">
+          <label>
+            <span>De</span>
+            <input
+              type="date"
+              value={customStart}
+              max={today}
+              onChange={(e) => setCustomStart(e.target.value)}
+            />
+          </label>
+          <label>
+            <span>Até</span>
+            <input
+              type="date"
+              value={customEnd}
+              max={today}
+              onChange={(e) => handleEndChange(e.target.value)}
+            />
+          </label>
+        </div>
+      )}
+      <div className="seg">
+        <button
+          className={`seg-btn${view === 'photowall' ? ' active' : ''}`}
+          onClick={() => setView('photowall')}
+        >
+          Parede de Fotos
+        </button>
+        <button
+          className={`seg-btn${view === 'timeline' ? ' active' : ''}`}
+          onClick={() => setView('timeline')}
+        >
+          Timeline
+        </button>
+        <button
+          className={`seg-btn${view === 'calendar' ? ' active' : ''}`}
+          onClick={() => setView('calendar')}
+        >
+          Calendário
+        </button>
+        <button
+          className={`seg-btn${view === 'list' ? ' active' : ''}`}
+          onClick={() => setView('list')}
+        >
+          Lista
+        </button>
+      </div>
+      {isEmpty && <p className="dashboard-empty">Sem registros neste período.</p>}
+      {slots.length > 0 && !isEmpty && (
+        view === 'photowall'
+          ? <PhotoWallView slots={slots} />
+          : view === 'timeline'
+            ? <TimelineView slots={slots} tags={tags} />
+            : view === 'calendar'
+              ? <DashboardCalendarView slots={slots} />
+              : <DashboardListView slots={slots} />
+      )}
+    </div>
+  );
+}
+
+function PhotoWallView({ slots }: { slots: DashboardSlot[] }) {
+  const [modalEntry, setModalEntry] = useState<EntryWithFoods | null>(null);
+  return (
+    <>
+      <div className="photowall-grid">
+        {[...slots].reverse().map((slot) => {
+          if (slot.status === 'loading') {
+            return <div key={slot.date} className="skeleton-cell" aria-hidden="true" />;
+          }
+          if (slot.status !== 'done') return null;
+          return slot.entries
+            .slice()
+            .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+            .map((e) => {
+              const time = new Date(e.created_at).toLocaleTimeString('pt-BR', {
+                hour: '2-digit',
+                minute: '2-digit',
+              });
+              const k = sumMacros(e.foods, 'kcal');
+              const kcalLabel = k != null ? `${Math.round(k)} kcal` : '–';
+              const extraPhotos = e.photos.slice(1, 3);
+              const extraOverflow = e.photos.length > 3 ? e.photos.length - 3 : 0;
+              return (
+                <button key={e.id} className="photowall-cell" onClick={() => setModalEntry(e)}>
+                  {e.photos.length > 0
+                    ? <img src={e.photos[0]} loading="lazy" alt={e.title ?? 'Foto da refeição'} />
+                    : <div className="photowall-cell-ph" role="img" aria-label="Sem foto" />
+                  }
+                  <div className="photowall-scrim" aria-hidden="true" />
+                  <span className="photowall-time">{time}</span>
+                  <span className="photowall-kcal">{kcalLabel}</span>
+                  {extraPhotos.length > 0 && (
+                    <div className="photowall-extra-strip" aria-hidden="true">
+                      {extraPhotos.map((url, i) => (
+                        <img key={i} src={url} alt="" loading="lazy" />
+                      ))}
+                      {extraOverflow > 0 && (
+                        <span className="photowall-extra-badge">+{extraOverflow}</span>
+                      )}
+                    </div>
+                  )}
+                </button>
+              );
+            });
+        })}
+      </div>
+      {modalEntry && <PhotoWallModal entry={modalEntry} onClose={() => setModalEntry(null)} />}
+    </>
+  );
+}
+
+function PhotoWallModal({ entry, onClose }: { entry: EntryWithFoods; onClose: () => void }) {
+  const sheetRef = useRef<HTMLDivElement>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+
+  useEffect(() => {
+    const sheet = sheetRef.current;
+    if (!sheet) return;
+
+    const focusable = Array.from(
+      sheet.querySelectorAll<HTMLElement>('button, [href], input, [tabindex]:not([tabindex="-1"])')
+    );
+    focusable[0]?.focus();
+
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') {
+        onCloseRef.current();
+        return;
+      }
+      if (e.key === 'Tab') {
+        if (focusable.length === 0) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (e.shiftKey) {
+          if (document.activeElement === first) {
+            e.preventDefault();
+            last.focus();
+          }
+        } else {
+          if (document.activeElement === last) {
+            e.preventDefault();
+            first.focus();
+          }
+        }
+      }
+    }
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
+  return (
+    <div className="pw-modal-backdrop" onClick={onClose}>
+      <div
+        ref={sheetRef}
+        className="pw-modal-sheet"
+        role="dialog"
+        aria-modal="true"
+        aria-label={entry.title ?? 'Detalhe da refeição'}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="pw-modal-top">
+          <button className="pw-modal-close" aria-label="Fechar" onClick={onClose}>✕</button>
+          {entry.photos.length > 1
+            ? (
+              <div className="pw-modal-strip">
+                {entry.photos.map((url, i) => (
+                  <img key={i} src={url} alt={i === 0 ? (entry.title ?? 'Foto da refeição') : ''} loading="lazy" />
+                ))}
+              </div>
+            )
+            : entry.photos.length === 1
+              ? <img className="pw-modal-photo" src={entry.photos[0]} alt={entry.title ?? 'Foto da refeição'} loading="lazy" />
+              : <div className="pw-modal-photo pw-modal-ph" role="img" aria-label="Sem foto" />
+          }
+        </div>
+        <ul className="pw-modal-foods">
+          {entry.foods.map((f) => (
+            <li key={f.id}>
+              <span>{f.description}{f.quantity ? ` (${f.quantity})` : ''}</span>
+              <span>{f.kcal != null ? `${Math.round(f.kcal)} kcal` : '–'}</span>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
+export function DayModal({ entries, onClose }: { entries: DayEntry[]; onClose: () => void }) {
+  const sheetRef = useRef<HTMLDivElement>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+
+  useEffect(() => {
+    const sheet = sheetRef.current;
+    if (!sheet) return;
+    const focusable = Array.from(
+      sheet.querySelectorAll<HTMLElement>('button, [href], input, [tabindex]:not([tabindex="-1"])')
+    );
+    focusable[0]?.focus();
+
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') { onCloseRef.current(); return; }
+      if (e.key === 'Tab') {
+        if (focusable.length === 0) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (e.shiftKey) {
+          if (document.activeElement === first) { e.preventDefault(); last.focus(); }
+        } else {
+          if (document.activeElement === last) { e.preventDefault(); first.focus(); }
+        }
+      }
+    }
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
+  return (
+    <div className="pw-modal-backdrop" onClick={onClose}>
+      <div
+        ref={sheetRef}
+        className="pw-modal-sheet day-modal-sheet"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Entradas do dia"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="day-modal-header">
+          <button className="pw-modal-close" aria-label="Fechar" onClick={onClose}>✕</button>
+        </div>
+        <ul className="day-modal-list">
+          {entries.map((entry) => {
+            const time = new Date(entry.created_at).toLocaleTimeString('pt-BR', {
+              timeZone: 'America/Sao_Paulo',
+              hour: '2-digit',
+              minute: '2-digit',
+            });
+            const macros = mealTotals(entry.foods);
+            return (
+              <li key={entry.id} className="day-modal-entry">
+                {entry.photos.length > 0
+                  ? <img className="day-modal-thumb" src={entry.photos[0]} alt={entry.title ?? 'Foto'} loading="lazy" />
+                  : <div className="day-modal-thumb day-modal-thumb-ph" />
+                }
+                <div className="day-modal-info">
+                  <span className="day-modal-time">{time}</span>
+                  <strong className="day-modal-title">{entry.title ?? 'Sem título'}</strong>
+                  {macros && <span className="day-modal-macros">{macros}</span>}
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
+const RTL_START = 6;
+const RTL_END = 23;
+const RTL_TOTAL = (RTL_END - RTL_START) * 4; // 68 slots (06:00–22:45)
+const RTL_WEEKDAYS = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
+const RTL_TICKS = Array.from({ length: RTL_TOTAL + 1 }, (_, i) => {
+  const isHour = i % 4 === 0;
+  const hour = RTL_START + Math.floor(i / 4);
+  return { i, isHour, hour, showLabel: isHour && i % 8 === 0 };
+});
+
+function TimelineView({ slots, tags }: { slots: DashboardSlot[]; tags: ContextTag[] }) {
+  const [modalEntry, setModalEntry] = useState<EntryWithFoods | null>(null);
+  const tagsById = new Map(tags.map((t) => [t.id, t]));
+
+  function dayParts(dateStr: string): [string, string, boolean] {
+    const [y, m, d] = dateStr.split('-').map(Number);
+    const dt = new Date(y, m - 1, d);
+    const dow = dt.getDay();
+    return [
+      RTL_WEEKDAYS[dow],
+      `${String(d).padStart(2, '0')}/${String(m).padStart(2, '0')}`,
+      dow === 0 || dow === 6,
+    ];
+  }
+
+  function entryToSlot(createdAt: string): number {
+    const dt = new Date(createdAt);
+    const slot = (dt.getHours() - RTL_START) * 4 + Math.floor(dt.getMinutes() / 15);
+    return Math.max(0, Math.min(RTL_TOTAL - 1, slot));
+  }
+
+  return (
+    <>
+      <div className="rtl-wrap">
+        {slots.map((slot) => {
+          if (slot.status === 'loading') {
+            return <div key={slot.date} className="skeleton-item rtl-skeleton" aria-hidden="true" />;
+          }
+          if (slot.status !== 'done' || slot.entries.length === 0) return null;
+
+          const [weekday, datePart, isWeekend] = dayParts(slot.date);
+          const sorted = [...slot.entries].sort(
+            (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
+          );
+
+          const grouped = new Map<number, EntryWithFoods[]>();
+          for (const e of sorted) {
+            const s = entryToSlot(e.created_at);
+            if (!grouped.has(s)) grouped.set(s, []);
+            grouped.get(s)!.push(e);
+          }
+
+          const slotTagColor = new Map<number, string>();
+          for (const [s, entries] of grouped.entries()) {
+            const color = entries[0].context_tag_id
+              ? tagsById.get(entries[0].context_tag_id)?.color
+              : undefined;
+            if (color) slotTagColor.set(s, color);
+          }
+
+          const maxStack = Math.max(
+            ...Array.from(grouped.values()).map((g) =>
+              g.reduce((n, e) => n + Math.max(1, e.photos.length), 0),
+            ),
+          );
+          const entriesHeight = maxStack * 66 + (maxStack - 1) * 4 + 12;
+
+          return (
+            <div key={slot.date} className={`rtl-day${isWeekend ? ' rtl-day-weekend' : ''}`}>
+              <div className="rtl-label" aria-label={`${weekday} ${datePart}`}>
+                <span className="rtl-label-day">{weekday}</span>
+                <span className="rtl-label-date">{datePart}</span>
+              </div>
+              <div className="rtl-content">
+                <div className="rtl-inner">
+                  <div className="rtl-ruler" role="presentation" aria-hidden="true">
+                    {RTL_TICKS.map(({ i, isHour, hour, showLabel }) => {
+                      const tickColor = slotTagColor.get(i);
+                      return (
+                        <div key={i} className={`rtl-tick${isHour ? ' rtl-tick-hour' : ''}${grouped.has(i) ? ' rtl-tick-active' : ''}`}>
+                          {showLabel && (
+                            <span className="rtl-hour-label">{String(hour).padStart(2, '0')}</span>
+                          )}
+                          <span
+                            className="rtl-tick-mark"
+                            style={tickColor ? { background: tickColor } : undefined}
+                          />
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div className="rtl-entries" style={{ height: entriesHeight }}>
+                    {Array.from(grouped.entries()).reverse().map(([slotIdx, entries]) => (
+                      <div
+                        key={slotIdx}
+                        className="rtl-entry-group"
+                        style={{ left: `${(slotIdx / RTL_TOTAL) * 100}%` }}
+                      >
+                        {entries.flatMap((e) => {
+                          const tagColor = e.context_tag_id
+                            ? tagsById.get(e.context_tag_id)?.color
+                            : undefined;
+                          const photos = e.photos.length > 0 ? e.photos : [null];
+                          return photos.map((photo, pi) => (
+                            <button
+                              key={`${e.id}-${pi}`}
+                              className="rtl-card"
+                              onClick={() => setModalEntry(e)}
+                              aria-label={e.title ?? 'Ver refeição'}
+                              style={tagColor ? { borderColor: tagColor } : undefined}
+                            >
+                              {photo ? (
+                                <img src={photo} alt={e.title ?? 'Foto'} loading="lazy" />
+                              ) : (
+                                <div
+                                  className="rtl-card-ph"
+                                  role="img"
+                                  aria-label="Sem foto"
+                                  style={tagColor ? { background: `${tagColor}1a` } : undefined}
+                                />
+                              )}
+                            </button>
+                          ));
+                        })}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      {modalEntry && <PhotoWallModal entry={modalEntry} onClose={() => setModalEntry(null)} />}
+    </>
+  );
+}
+
+function fmtDateBR(d: string): string {
+  const [y, m, day] = d.split('-');
+  return `${day}/${m}/${y}`;
+}
+
+const CAL_WEEKDAYS = ['D', 'S', 'T', 'Q', 'Q', 'S', 'S'];
+
+function DashboardCalendarView({ slots }: { slots: DashboardSlot[] }) {
+  const [dayModal, setDayModal] = useState<DayEntry[] | null>(null);
+
+  const byDay = useMemo(() => {
+    const done = new Map<string, EntryWithFoods[]>();
+    const loading = new Set<string>();
+    for (const slot of slots) {
+      if (slot.status === 'done' && slot.entries.length > 0) done.set(slot.date, slot.entries);
+      else if (slot.status === 'loading') loading.add(slot.date);
+    }
+    return { done, loading };
+  }, [slots]);
+
+  const start = slots[0]?.date ?? todayLocal();
+  const end = slots[slots.length - 1]?.date ?? todayLocal();
+  const months = useMemo(() => monthsBetween(start, end), [start, end]);
+
+  return (
+    <>
+      <div className="cal-wrap">
+        {months.map(({ y, m }) => (
+          <div className="cal-month" key={`${y}-${m}`}>
+            <h2 className="cal-title">{monthLabel(y, m)}</h2>
+            <div className="cal-grid">
+              {CAL_WEEKDAYS.map((w, i) => (
+                <div className="cal-weekday" key={i}>{w}</div>
+              ))}
+              {monthCells(y, m).map((day, i) => {
+                if (day === null) {
+                  return <div className="cal-cell empty" key={`b${i}`} />;
+                }
+                const inRange = day >= start && day <= end;
+                const isLoading = inRange && byDay.loading.has(day);
+                const dayEntries = byDay.done.get(day) ?? [];
+                const thumbs = dayEntries.map((e) => e.photos[0]).filter(Boolean).slice(0, 3);
+                const overflow = dayEntries.length - thumbs.length;
+                const hasEntriesNoPhoto = inRange && dayEntries.length > 0 && thumbs.length === 0;
+                const clickable = inRange && dayEntries.length > 0;
+                const cls = `cal-cell${inRange ? '' : ' out'}${isLoading ? ' cal-cell-loading' : ''}`;
+                const inner = (
+                  <>
+                    <span className="cal-day">{Number(day.slice(8))}</span>
+                    {thumbs.length > 0 && (
+                      <div className="cal-thumbs">
+                        {thumbs.map((url, j) => <img key={j} src={url} alt="" loading="lazy" />)}
+                        {overflow > 0 && <span className="cal-more">+{overflow}</span>}
+                      </div>
+                    )}
+                    {hasEntriesNoPhoto && <div className="cal-dot" aria-label="Tem entradas sem foto" />}
+                  </>
+                );
+                return clickable
+                  ? <button className={cls} key={day} onClick={() => setDayModal(dayEntries)}>{inner}</button>
+                  : <div className={cls} key={day}>{inner}</div>;
+              })}
+            </div>
+          </div>
+        ))}
+      </div>
+      {dayModal && <DayModal entries={dayModal} onClose={() => setDayModal(null)} />}
+    </>
+  );
+}
+
+function DashboardListView({ slots }: { slots: DashboardSlot[] }) {
+  return (
+    <div className="shared-list">
+      {[...slots].reverse().map((slot) => {
+        if (slot.status === 'loading') {
+          return <div key={slot.date} className="skeleton-item" aria-hidden="true" />;
+        }
+        if (slot.status !== 'done' || slot.entries.length === 0) return null;
+        const sorted = slot.entries
+          .slice()
+          .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+        const dayTotalsStr = dayTotals(sorted);
+        return (
+          <section className="shared-day" key={slot.date}>
+            <div className="shared-day-head">
+              <h2>{fmtDateBR(slot.date)}</h2>
+              {dayTotalsStr && <span className="totals">{dayTotalsStr}</span>}
+            </div>
+            <ul className="tl-list">
+              {sorted.map((entry) => {
+                const time = new Date(entry.created_at).toLocaleTimeString('pt-BR', {
+                  timeZone: 'America/Sao_Paulo',
+                  hour: '2-digit',
+                  minute: '2-digit',
+                });
+                const macros = mealTotals(entry.foods);
+                return (
+                  <li key={entry.id} className="tl-item">
+                    {entry.photos.length > 0
+                      ? <div className="tl-thumb-wrap">
+                          <img className="tl-thumb" src={entry.photos[0]} alt={entry.title ?? 'Foto'} loading="lazy" />
+                          {entry.photos.length > 1 && (
+                            <span className="tl-multi-badge" aria-hidden="true">+{entry.photos.length - 1}</span>
+                          )}
+                        </div>
+                      : <div className="tl-thumb tl-thumb-ph" role="img" aria-label="Sem foto" />
+                    }
+                    <div className="tl-body">
+                      <span className="tl-time">{time}</span>
+                      <div className="tl-title-row">
+                        <span className="tl-title">{entry.title ?? '—'}</span>
+                      </div>
+                      {macros && <div className="tl-macros">{macros}</div>}
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          </section>
+        );
+      })}
     </div>
   );
 }
@@ -230,6 +879,38 @@ function TokenGate({ onSave }: { onSave: (token: string) => void }) {
   );
 }
 
+type HistoryDot = {
+  date: string;
+  status: 'loading' | 'empty' | 'reviewed' | 'pending';
+  total: number;
+  pending: number;
+};
+
+function sevenDaysBefore(dateStr: string): string[] {
+  return Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(dateStr + 'T12:00:00');
+    d.setDate(d.getDate() - (i + 1));
+    const y = d.getFullYear();
+    const mo = String(d.getMonth() + 1).padStart(2, '0');
+    const dy = String(d.getDate()).padStart(2, '0');
+    return `${y}-${mo}-${dy}`;
+  });
+}
+
+function dotAriaLabel(dot: HistoryDot): string {
+  const d = new Date(dot.date + 'T12:00:00');
+  const dayName = d.toLocaleDateString('pt-BR', { weekday: 'long' });
+  const day = String(d.getDate()).padStart(2, '0');
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const dmStr = `${day}/${month}`;
+  if (dot.status === 'loading') return `${dayName} ${dmStr}: carregando`;
+  if (dot.total === 0) return `${dayName} ${dmStr}: sem entradas`;
+  const entryWord = dot.total === 1 ? 'entrada' : 'entradas';
+  if (dot.pending === 0) return `${dayName} ${dmStr}: ${dot.total} ${entryWord}`;
+  const pendWord = dot.pending === 1 ? 'pendente de revisão' : 'pendentes de revisão';
+  return `${dayName} ${dmStr}: ${dot.total} ${entryWord}, ${dot.pending} ${pendWord}`;
+}
+
 function Review({ onLogout }: { onLogout: () => void }) {
   const [date, setDate] = useState<string>(todayLocal());
   const [entries, setEntries] = useState<EntryWithFoods[]>([]);
@@ -239,6 +920,7 @@ function Review({ onLogout }: { onLogout: () => void }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showManual, setShowManual] = useState(false);
+  const [historyDots, setHistoryDots] = useState<HistoryDot[]>([]);
 
   // CAP-8: food search across full history
   const [searchQuery, setSearchQuery] = useState('');
@@ -307,6 +989,39 @@ function Review({ onLogout }: { onLogout: () => void }) {
       clearTimeout(timer);
     };
   }, [searchQuery, onLogout]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const dates = sevenDaysBefore(date);
+    setHistoryDots(dates.map((d) => ({ date: d, status: 'loading', total: 0, pending: 0 })));
+    dates.forEach((d, idx) => {
+      fetchEntries(d)
+        .then((entries) => {
+          if (cancelled) return;
+          const pendingCount = entries.filter((e) => !e.reviewed).length;
+          const status: HistoryDot['status'] =
+            entries.length === 0 ? 'empty' : pendingCount > 0 ? 'pending' : 'reviewed';
+          setHistoryDots((prev) => {
+            const next = [...prev];
+            next[idx] = { date: d, status, total: entries.length, pending: pendingCount };
+            return next;
+          });
+        })
+        .catch((err) => {
+          if (cancelled) return;
+          if (err instanceof UnauthorizedError) {
+            onLogout();
+            return;
+          }
+          setHistoryDots((prev) => {
+            const next = [...prev];
+            next[idx] = { date: d, status: 'empty', total: 0, pending: 0 };
+            return next;
+          });
+        });
+    });
+    return () => { cancelled = true; };
+  }, [date, onLogout]);
 
   const handleAccept = useCallback(
     async (id: string) => {
@@ -398,7 +1113,7 @@ function Review({ onLogout }: { onLogout: () => void }) {
   // (SP-local) day if it differs from the one shown, else refetch the current day.
   // Re-throws on failure so the form can show the error and stay open.
   const handleCreateManual = useCallback(
-    async (input: { description: string; createdAt?: string; photos?: File[] }) => {
+    async (input: { description?: string; createdAt?: string; photos?: File[] }) => {
       try {
         const view = await createManualEntry(input);
         setShowManual(false);
@@ -434,9 +1149,17 @@ function Review({ onLogout }: { onLogout: () => void }) {
     return sortByCreated(filtered, sortDir);
   }, [entries, tagFilter, sortDir]);
 
-  // Day summary reflects the active tag filter: it aggregates the visible entries,
-  // not all of them. Null when nothing showable so the bar can be skipped.
-  const summary = useMemo(() => dayTotals(visible), [visible]);
+  // Mini-resumo: aggregate all entries for the day (not filtered by tag).
+  const dayFoods = useMemo(() => entries.flatMap((e) => e.foods), [entries]);
+  const [dayKcal, dayProtein, dayCarbs, dayFat] = useMemo(
+    () => [
+      sumMacros(dayFoods, 'kcal'),
+      sumMacros(dayFoods, 'protein_g'),
+      sumMacros(dayFoods, 'carbs_g'),
+      sumMacros(dayFoods, 'fat_g'),
+    ],
+    [dayFoods]
+  );
 
   return (
     <div className="review">
@@ -560,12 +1283,48 @@ function Review({ onLogout }: { onLogout: () => void }) {
             <div className="empty">Nenhuma entrada para este filtro.</div>
           )}
 
-          {!loading && !error && visible.length > 0 && (
+          {!loading && !error && (
             <div className="day-summary">
-              <span className="day-summary-count">
-                {visible.length} {visible.length === 1 ? 'entrada' : 'entradas'}
-              </span>
-              {summary && <span className="day-summary-totals">{summary}</span>}
+              {entries.length === 0 ? (
+                <span className="day-summary-empty">Sem registros neste dia.</span>
+              ) : (
+                <div className="day-summary-macros">
+                  {dayKcal != null && (
+                    <span className="macro-item">
+                      <span className="macro-label">kcal</span>
+                      <span className="macro-value">{Math.round(dayKcal)}</span>
+                    </span>
+                  )}
+                  {dayProtein != null && (
+                    <span className="macro-item">
+                      <span className="macro-label">P</span>
+                      <span className="macro-value">{Math.round(dayProtein)}g</span>
+                    </span>
+                  )}
+                  {dayCarbs != null && (
+                    <span className="macro-item">
+                      <span className="macro-label">C</span>
+                      <span className="macro-value">{Math.round(dayCarbs)}g</span>
+                    </span>
+                  )}
+                  {dayFat != null && (
+                    <span className="macro-item">
+                      <span className="macro-label">G</span>
+                      <span className="macro-value">{Math.round(dayFat)}g</span>
+                    </span>
+                  )}
+                </div>
+              )}
+              <div className="day-history-dots">
+                {historyDots.map((dot) => (
+                  <button
+                    key={dot.date}
+                    className={`history-dot${dot.status === 'reviewed' ? ' reviewed' : dot.status === 'pending' ? ' pending' : dot.status === 'loading' ? ' loading' : ''}`}
+                    aria-label={dotAriaLabel(dot)}
+                    onClick={() => setDate(dot.date)}
+                  />
+                ))}
+              </div>
             </div>
           )}
 
@@ -596,7 +1355,7 @@ function ManualEntryForm({
   onSubmit,
   onCancel,
 }: {
-  onSubmit: (input: { description: string; createdAt?: string; photos?: File[] }) => Promise<void>;
+  onSubmit: (input: { description?: string; createdAt?: string; photos?: File[] }) => Promise<void>;
   onCancel: () => void;
 }) {
   const [description, setDescription] = useState('');
@@ -605,9 +1364,10 @@ function ManualEntryForm({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const hasContent = description.trim().length > 0 || photos.length > 0;
+
   const submit = async () => {
-    const desc = description.trim();
-    if (!desc || busy) return;
+    if (!hasContent || busy) return;
     setBusy(true);
     setError(null);
     try {
@@ -615,6 +1375,7 @@ function ManualEntryForm({
       // (-03:00 — Brazil has no DST since 2019) so the instant is correct regardless
       // of the device timezone. Empty → omit so the backend's DEFAULT now() applies.
       const createdAt = when ? new Date(`${when}:00-03:00`).toISOString() : undefined;
+      const desc = description.trim() || undefined;
       await onSubmit({ description: desc, createdAt, photos });
     } catch (err) {
       setError((err as Error).message);
@@ -627,13 +1388,22 @@ function ManualEntryForm({
     <div className="manual-form">
       <h2>Novo registro manual</h2>
       <label>
-        O que você comeu?
+        Foto
+        <input
+          type="file"
+          accept="image/*"
+          multiple
+          autoFocus
+          onChange={(e) => setPhotos(e.target.files ? Array.from(e.target.files) : [])}
+        />
+      </label>
+      <label>
+        O que você comeu? <span style={{ fontWeight: 400 }}>(opcional)</span>
         <textarea
           value={description}
           onChange={(e) => setDescription(e.target.value)}
           placeholder="Ex.: 2 ovos mexidos, uma fatia de pão integral e um café com leite"
           rows={3}
-          autoFocus
         />
       </label>
       <label>
@@ -645,18 +1415,9 @@ function ManualEntryForm({
           onChange={(e) => setWhen(e.target.value)}
         />
       </label>
-      <label>
-        Foto (opcional)
-        <input
-          type="file"
-          accept="image/*"
-          multiple
-          onChange={(e) => setPhotos(e.target.files ? Array.from(e.target.files) : [])}
-        />
-      </label>
       {error && <div className="banner error">{error}</div>}
       <div className="manual-actions">
-        <button type="button" onClick={() => void submit()} disabled={!description.trim() || busy}>
+        <button type="button" onClick={() => void submit()} disabled={!hasContent || busy}>
           {busy ? 'Analisando…' : 'Criar e analisar'}
         </button>
         <button type="button" className="link" onClick={onCancel} disabled={busy}>
@@ -770,12 +1531,17 @@ function EntryCard({
 
   return (
     <li className={`card ${entry.reviewed ? 'reviewed' : ''}`}>
+      <div
+        className={`conf-border ${confClass(entry.ai_confidence_overall)}`}
+        aria-label={`Confiança da IA: ${entry.ai_confidence_overall.toFixed(2)}`}
+      />
       <div className="photos">
         {entry.photos.length > 0
           ? entry.photos.map((url, i) => (
               <img key={i} src={url} alt={`Foto ${i + 1}`} loading="lazy" />
             ))
-          : <div className="photo-placeholder" aria-hidden="true" />}
+          : <div className="photo-placeholder" role="img" aria-label="Sem foto" />}
+        {entry.reviewed && <span className="reviewed-check" aria-hidden="true">✓</span>}
       </div>
       <div className="card-body">
         <div className="card-head">
@@ -783,12 +1549,14 @@ function EntryCard({
             <div>
               <strong>{entry.title ?? 'Sem título'}</strong>
               <span className="time">{time}</span>
+              {entry.ai_confidence_overall > 0 && (
+                <span className={`conf-pct ${confClass(entry.ai_confidence_overall)}`}>
+                  {pct(entry.ai_confidence_overall)}
+                </span>
+              )}
             </div>
             {totals && <div className="totals">{totals}</div>}
           </div>
-          <span className={`badge ${confClass(entry.ai_confidence_overall)}`}>
-            {pct(entry.ai_confidence_overall)}
-          </span>
         </div>
 
         {!editing ? (

@@ -1,16 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { fetchShared, fetchSharedPatterns, ShareExpiredError, ShareInvalidError } from './api';
-import { FoodRow, mealTotals } from './App';
+import { DayModal, FoodRow, mealTotals } from './App';
+import type { DayEntry } from './App';
 import type { PatternsPayload, SharedEntry, SharedPayload } from './types';
+import { monthsBetween, monthCells, monthLabel } from './calendarUtils';
 
 // Local day key in the same timezone the backend filters on, so grouping matches
 // the period boundaries exactly.
 function spDate(iso: string): string {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo' }).format(new Date(iso));
-}
-
-function pad2(n: number): string {
-  return String(n).padStart(2, '0');
 }
 
 function fmtDateBR(d: string): string {
@@ -28,49 +26,7 @@ function spTime(iso: string): string {
 
 const WEEKDAYS = ['D', 'S', 'T', 'Q', 'Q', 'S', 'S'];
 
-// Months (inclusive) spanning [start, end], each as {y, m} (m is 1-based).
-function monthsBetween(start: string, end: string): { y: number; m: number }[] {
-  const [sy, sm] = start.split('-').map(Number);
-  const [ey, em] = end.split('-').map(Number);
-  const out: { y: number; m: number }[] = [];
-  let y = sy;
-  let m = sm;
-  while (y < ey || (y === ey && m <= em)) {
-    out.push({ y, m });
-    m += 1;
-    if (m > 12) {
-      m = 1;
-      y += 1;
-    }
-  }
-  return out;
-}
-
-// Calendar cells for a month: leading nulls to align day 1 to its weekday, then
-// one 'YYYY-MM-DD' per day. UTC math avoids local-tz drift in the grid layout.
-function monthCells(y: number, m: number): (string | null)[] {
-  const firstWeekday = new Date(Date.UTC(y, m - 1, 1)).getUTCDay();
-  const daysInMonth = new Date(Date.UTC(y, m, 0)).getUTCDate();
-  const cells: (string | null)[] = [];
-  for (let i = 0; i < firstWeekday; i += 1) {
-    cells.push(null);
-  }
-  for (let d = 1; d <= daysInMonth; d += 1) {
-    cells.push(`${y}-${pad2(m)}-${pad2(d)}`);
-  }
-  return cells;
-}
-
-function monthLabel(y: number, m: number): string {
-  const label = new Date(Date.UTC(y, m - 1, 1)).toLocaleDateString('pt-BR', {
-    month: 'long',
-    year: 'numeric',
-    timeZone: 'UTC',
-  });
-  return label.charAt(0).toUpperCase() + label.slice(1);
-}
-
-type View = 'calendar' | 'list' | 'patterns';
+type View = 'calendar' | 'list' | 'patterns' | 'photowall' | 'timeline';
 type PatternsStatus = 'idle' | 'loading' | 'ok' | 'error' | 'gone';
 
 export function PublicShare({ token }: { token: string }) {
@@ -78,6 +34,7 @@ export function PublicShare({ token }: { token: string }) {
   const [status, setStatus] = useState<'loading' | 'ok' | 'expired' | 'invalid' | 'error'>('loading');
   const [view, setView] = useState<View>('calendar');
   const [foodFilter, setFoodFilter] = useState('');
+  const [dayModal, setDayModal] = useState<DayEntry[] | null>(null);
 
   // CAP-7b: pattern analysis is fetched lazily — only once the "Padrões" tab is
   // opened — so the calendar/list view never waits on (or pays for) the AI call.
@@ -172,6 +129,20 @@ export function PublicShare({ token }: { token: string }) {
         <div className="seg">
           <button
             type="button"
+            className={view === 'photowall' ? 'seg-btn active' : 'seg-btn'}
+            onClick={() => setView('photowall')}
+          >
+            Parede de Fotos
+          </button>
+          <button
+            type="button"
+            className={view === 'timeline' ? 'seg-btn active' : 'seg-btn'}
+            onClick={() => setView('timeline')}
+          >
+            Timeline
+          </button>
+          <button
+            type="button"
             className={view === 'calendar' ? 'seg-btn active' : 'seg-btn'}
             onClick={() => setView('calendar')}
           >
@@ -230,10 +201,20 @@ export function PublicShare({ token }: { token: string }) {
             : 'Sem registros neste período.'}
         </div>
       ) : view === 'calendar' ? (
-        <CalendarView entries={filteredEntries} start={data.period_start} end={data.period_end} />
+        <CalendarView
+          entries={filteredEntries}
+          start={data.period_start}
+          end={data.period_end}
+          onDayClick={(dayEntries) => setDayModal(dayEntries)}
+        />
+      ) : view === 'photowall' ? (
+        <SharePhotoWallView entries={filteredEntries} />
+      ) : view === 'timeline' ? (
+        <ShareTimelineView entries={filteredEntries} />
       ) : (
         <ListView entries={filteredEntries} />
       )}
+      {dayModal && <DayModal entries={dayModal} onClose={() => setDayModal(null)} />}
     </div>
   );
 }
@@ -289,10 +270,12 @@ function CalendarView({
   entries,
   start,
   end,
+  onDayClick,
 }: {
   entries: SharedEntry[];
   start: string;
   end: string;
+  onDayClick?: (dayEntries: SharedEntry[]) => void;
 }) {
   const byDay = useMemo(() => {
     const map = new Map<string, SharedEntry[]>();
@@ -326,8 +309,11 @@ function CalendarView({
               const dayEntries = byDay.get(day) ?? [];
               const thumbs = dayEntries.map((e) => e.photos[0]).filter(Boolean).slice(0, 3);
               const overflow = dayEntries.length - thumbs.length;
-              return (
-                <div className={`cal-cell ${inRange ? '' : 'out'}`} key={day}>
+              const hasEntriesNoPhoto = inRange && dayEntries.length > 0 && thumbs.length === 0;
+              const clickable = inRange && dayEntries.length > 0 && !!onDayClick;
+              const cls = `cal-cell${inRange ? '' : ' out'}`;
+              const inner = (
+                <>
                   <span className="cal-day">{Number(day.slice(8))}</span>
                   {thumbs.length > 0 && (
                     <div className="cal-thumbs">
@@ -337,13 +323,176 @@ function CalendarView({
                       {overflow > 0 && <span className="cal-more">+{overflow}</span>}
                     </div>
                   )}
-                </div>
+                  {hasEntriesNoPhoto && <div className="cal-dot" aria-label="Tem entradas sem foto" />}
+                </>
               );
+              return clickable
+                ? <button className={cls} key={day} onClick={() => onDayClick(dayEntries)}>{inner}</button>
+                : <div className={cls} key={day}>{inner}</div>;
             })}
           </div>
         </div>
       ))}
     </div>
+  );
+}
+
+function SharePhotoWallView({ entries }: { entries: SharedEntry[] }) {
+  return (
+    <div className="photowall-grid">
+      {entries.map((e) => {
+        const time = new Date(e.created_at).toLocaleTimeString('pt-BR', {
+          timeZone: 'America/Sao_Paulo',
+          hour: '2-digit',
+          minute: '2-digit',
+        });
+        const kcal = e.foods.reduce<number | null>((s, f) => f.kcal != null ? (s ?? 0) + f.kcal : s, null);
+        const kcalLabel = kcal != null ? `${Math.round(kcal)} kcal` : '–';
+        const extraPhotos = e.photos.slice(1, 3);
+        const extraOverflow = e.photos.length > 3 ? e.photos.length - 3 : 0;
+        return (
+          <div key={e.id} className="photowall-cell" style={{ cursor: 'default' }}>
+            {e.photos.length > 0
+              ? <img src={e.photos[0]} loading="lazy" alt={e.title ?? 'Foto da refeição'} />
+              : <div className="photowall-cell-ph" role="img" aria-label="Sem foto" />
+            }
+            <div className="photowall-scrim" aria-hidden="true" />
+            <span className="photowall-time">{time}</span>
+            <span className="photowall-kcal">{kcalLabel}</span>
+            {extraPhotos.length > 0 && (
+              <div className="photowall-extra-strip" aria-hidden="true">
+                {extraPhotos.map((url, i) => (
+                  <img key={i} src={url} alt="" loading="lazy" />
+                ))}
+                {extraOverflow > 0 && (
+                  <span className="photowall-extra-badge">+{extraOverflow}</span>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+const SHR_START = 6;
+const SHR_END = 23;
+const SHR_TOTAL = (SHR_END - SHR_START) * 4;
+const SHR_WEEKDAYS = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
+const SHR_TICKS = Array.from({ length: SHR_TOTAL + 1 }, (_, i) => {
+  const isHour = i % 4 === 0;
+  const hour = SHR_START + Math.floor(i / 4);
+  return { i, isHour, hour, showLabel: isHour && i % 8 === 0 };
+});
+
+function ShareTimelineView({ entries }: { entries: SharedEntry[] }) {
+  const [modal, setModal] = useState<SharedEntry | null>(null);
+
+  const days = useMemo(() => {
+    const map = new Map<string, SharedEntry[]>();
+    for (const e of entries) {
+      const key = spDate(e.created_at);
+      const list = map.get(key);
+      if (list) list.push(e);
+      else map.set(key, [e]);
+    }
+    return Array.from(map.entries()).sort(([a], [b]) => a.localeCompare(b));
+  }, [entries]);
+
+  function dayLabel(dateStr: string): [string, string, boolean] {
+    const [y, m, d] = dateStr.split('-').map(Number);
+    const dt = new Date(y, m - 1, d);
+    const dow = dt.getDay();
+    return [
+      SHR_WEEKDAYS[dow],
+      `${String(d).padStart(2, '0')}/${String(m).padStart(2, '0')}`,
+      dow === 0 || dow === 6,
+    ];
+  }
+
+  function entryToSlot(iso: string): number {
+    const [h, m] = spTime(iso).split(':').map(Number);
+    const slot = (h - SHR_START) * 4 + Math.floor(m / 15);
+    return Math.max(0, Math.min(SHR_TOTAL - 1, slot));
+  }
+
+  return (
+    <>
+      <div className="rtl-wrap">
+        {days.map(([day, dayEntries]) => {
+          const [weekday, datePart, isWeekend] = dayLabel(day);
+          const sorted = [...dayEntries].sort(
+            (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
+          );
+
+          const grouped = new Map<number, SharedEntry[]>();
+          for (const e of sorted) {
+            const s = entryToSlot(e.created_at);
+            if (!grouped.has(s)) grouped.set(s, []);
+            grouped.get(s)!.push(e);
+          }
+
+          const maxStack = Math.max(
+            ...Array.from(grouped.values()).map((g) =>
+              g.reduce((n, e) => n + Math.max(1, e.photos.length), 0),
+            ),
+          );
+          const entriesHeight = maxStack * 66 + (maxStack - 1) * 4 + 12;
+
+          return (
+            <div key={day} className={`rtl-day${isWeekend ? ' rtl-day-weekend' : ''}`}>
+              <div className="rtl-label" aria-label={`${weekday} ${datePart}`}>
+                <span className="rtl-label-day">{weekday}</span>
+                <span className="rtl-label-date">{datePart}</span>
+              </div>
+              <div className="rtl-content">
+                <div className="rtl-inner">
+                  <div className="rtl-ruler" role="presentation" aria-hidden="true">
+                    {SHR_TICKS.map(({ i, isHour, hour, showLabel }) => (
+                      <div key={i} className={`rtl-tick${isHour ? ' rtl-tick-hour' : ''}${grouped.has(i) ? ' rtl-tick-active' : ''}`}>
+                        {showLabel && (
+                          <span className="rtl-hour-label">{String(hour).padStart(2, '0')}</span>
+                        )}
+                        <span className="rtl-tick-mark" />
+                      </div>
+                    ))}
+                  </div>
+                  <div className="rtl-entries" style={{ height: entriesHeight }}>
+                    {Array.from(grouped.entries()).map(([slotIdx, slotEntries]) => (
+                      <div
+                        key={slotIdx}
+                        className="rtl-entry-group"
+                        style={{ left: `${(slotIdx / SHR_TOTAL) * 100}%` }}
+                      >
+                        {slotEntries.flatMap((e) => {
+                          const photos = e.photos.length > 0 ? e.photos : [null];
+                          return photos.map((photo, pi) => (
+                            <button
+                              key={`${e.id}-${pi}`}
+                              className="rtl-card"
+                              onClick={() => setModal(e)}
+                              aria-label={e.title ?? 'Ver refeição'}
+                            >
+                              {photo ? (
+                                <img src={photo} alt={e.title ?? 'Foto'} loading="lazy" />
+                              ) : (
+                                <div className="rtl-card-ph" role="img" aria-label="Sem foto" />
+                              )}
+                            </button>
+                          ));
+                        })}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      {modal && <DayModal entries={[modal]} onClose={() => setModal(null)} />}
+    </>
   );
 }
 
