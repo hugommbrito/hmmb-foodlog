@@ -54,7 +54,7 @@ Entradas de captura:
 | Relatório semanal de padrões | 🔜 Pendente |
 | Link temporário para nutricionista | 🔜 Pendente |
 | Busca por alimento no histórico | 🔜 Pendente |
-| Atalho iOS (Shortcut) configurado no aparelho | 🔜 Pendente (backend pronto) |
+| Atalho iOS (Shortcut) configurado no aparelho | 🔜 Pendente (backend pronto + guia no passo 8) |
 
 ---
 
@@ -99,10 +99,11 @@ Caminho de captura alternativo ao WhatsApp, pensado para o **iPhone Shortcut** (
 2. O header `Authorization: Bearer <token>` é validado contra a coluna `users.api_token` (resolve o usuário)
 3. Cada foto é validada (mimetype `image/*`, ≤20 MB, não-vazia) e enviada ao Cloudflare R2
 4. **Uma única** `entry` é criada com o array de todas as fotos (ângulos diferentes da mesma refeição)
-5. Um job de análise é enfileirado (fire-and-forget)
-6. Resposta `201 { entry_id }`
+5. Um job de análise é enfileirado e o endpoint **aguarda** o worker concluir (até `ANALYSIS_WAIT_TIMEOUT_MS`, padrão 50 s)
+6. Resposta `201 { entry_id, analysis_status, title, ai_confidence_overall, foods }` — com a análise já preenchida (textos em pt-BR). Se o tempo esgotar, retorna `analysis_status: "pending"` sem falhar a captura
+7. `GET /entries/:id` (mesmo token Bearer, restrito ao dono) devolve a entry + `food_items` para consulta posterior do resultado
 
-Diferente do webhook, este endpoint usa **códigos HTTP corretos**: `401` (token ausente/inválido), `400` (sem arquivo / não-imagem / vazio), `413` (foto >20 MB ou fotos demais), `500` (falha no R2/banco). Limite de 10 fotos por requisição.
+Diferente do webhook, este endpoint usa **códigos HTTP corretos**: `401` (token ausente/inválido), `400` (sem arquivo / não-imagem / vazio), `413` (foto >20 MB ou fotos demais), `404` (`GET` de entry inexistente ou de outro usuário), `500` (falha no R2/banco). Limite de 10 fotos por requisição.
 
 ### Autenticação por número de telefone
 
@@ -239,6 +240,55 @@ O arquivo `railway.json` está configurado para o builder **Nixpacks** e define 
 - **Variáveis de ambiente:** configure no painel do Railway todas as do `.env.example` (`DATABASE_URL`, `REDIS_URL`, `ANTHROPIC_API_KEY`, `ZAPI_*`, `R2_*`). `PORT` é injetada pelo Railway.
 - **Observação:** o pré-deploy usa `tsx` (devDependency); não habilite poda de devDependencies (`NPM_CONFIG_PRODUCTION`/`--omit=dev`), senão a migration não roda.
 
+### 8. Configurar o atalho no iPhone (Shortcut)
+
+O backend já expõe `POST /entries/photo`. Este passo monta o atalho iOS que tira a foto e a envia, com captura em ≤10 s a partir da tela de início, do Botão de Ação ou da Siri.
+
+**Pré-requisitos:**
+
+1. A **URL pública do backend** (domínio do Railway), ex.: `https://seu-projeto.up.railway.app`
+2. Um **token Bearer** provisionado para o seu usuário:
+
+   ```sql
+   UPDATE users SET api_token = 'token-secreto-aqui' WHERE phone_number = '5511999999999';
+   -- Gere um valor aleatório forte, ex.: openssl rand -hex 24
+   ```
+
+**Montando o atalho** (app **Atalhos** → **+**):
+
+1. Ação **"Pedir entrada"** (Ask for Input):
+   - **Tipo:** `Número`
+   - **Pergunta:** `Quantas fotos?`
+   - **Padrão:** `1`
+2. Ação **"Definir variável"** (Set Variable): crie a variável `Fotos` com o valor de uma **lista vazia** (use "Lista" sem itens) — ela acumulará as fotos tiradas no laço.
+3. Ação **"Repetir"** (Repeat):
+   - Repetições = variável **Entrada Fornecida** (resultado do passo 1)
+   - **Dentro do laço:**
+     1. **"Tirar foto"** (Take Photo) — desative "Mostrar prévia da câmera" para captura instantânea
+     2. **"Adicionar à variável"** (Add to Variable) → adicione **Foto** à variável `Fotos`
+4. Ação **"Obter conteúdo da URL"** (Get Contents of URL):
+   - **URL:** `https://seu-dominio.up.railway.app/entries/photo`
+   - **Método:** `POST`
+   - **Cabeçalhos:** chave `Authorization`, valor `Bearer token-secreto-aqui` (inclua o prefixo `Bearer `)
+   - **Corpo da requisição:** selecione **`Form`** → adicione um campo do tipo **`Arquivo`** → nome livre (ex.: `photo`, o backend lê via `request.files()`) → valor = variável **`Fotos`** (a lista do passo 3)
+   - O iOS envia cada item da lista como uma parte `multipart` separada; o backend cria **uma única** `entry` com todas elas (ângulos da mesma refeição). Limite de **10 fotos** por requisição — peça no máximo esse número no passo 1.
+5. (Opcional) Ação **"Mostrar notificação"** com o resultado, para conferir o `201` (que já traz a análise — `title`, `foods`, `analysis_status`).
+6. Renomeie (ex.: "📸 FoodLog") e salve.
+
+**Disparo rápido:** adicione à Tela de Início, vincule ao Botão de Ação (iPhone 15 Pro+), ao Toque Atrás (Acessibilidade → Toque) ou invoque por Siri.
+
+**Conferindo a resposta:**
+
+| HTTP | Significado |
+|---|---|
+| `201 { entry_id, analysis_status, title, ai_confidence_overall, foods }` | ✅ Foto recebida e analisada |
+| `401` | Token ausente/inválido — confira o header `Authorization` e a coluna `api_token` |
+| `400` | Sem arquivo ou corpo não-multipart — confirme **Form** + campo tipo **Arquivo** |
+| `413` | Foto > 20 MB ou mais de 10 fotos |
+| `500` | Falha no R2/banco (lado servidor) |
+
+O `POST` aguarda a análise do Claude Sonnet terminar (até `ANALYSIS_WAIT_TIMEOUT_MS`, padrão 50 s) e devolve o resultado no corpo. Se exceder o tempo, retorna `analysis_status: "pending"` — a foto fica salva e a análise pode ser consultada depois em `GET /entries/:id` (mesmo token Bearer, só entries do próprio usuário).
+
 ---
 
 ## O que está pendente
@@ -269,7 +319,7 @@ Busca por nome de alimento, retornando todas as entradas onde a IA identificou a
 
 ### iPhone Shortcut (lado iOS)
 
-O **backend já está pronto** (`POST /entries/photo` — ver "O que está implementado"). Falta apenas montar o atalho iOS: abrir a câmera, enviar a foto via "Get Contents of URL" com o header Bearer, captura completa em ≤10 segundos a partir do widget ou Siri.
+O **backend já está pronto** (`POST /entries/photo` — ver "O que está implementado") e o **passo a passo de montagem do atalho** está documentado em "Como configurar e rodar" → passo 8. Falta apenas executá-lo no aparelho: abrir a câmera, enviar a foto via "Get Contents of URL" com o header Bearer, captura completa em ≤10 segundos a partir do widget ou Siri.
 
 ---
 

@@ -1,0 +1,2513 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  acceptEntry,
+  clearToken,
+  createManualEntry,
+  createShareLink,
+  createTag,
+  deleteEntry,
+  deleteShareLink,
+  deleteTag,
+  fetchEntries,
+  fetchRequestLogs,
+  fetchTags,
+  fetchWeeklyReport,
+  getToken,
+  listShareLinks,
+  purgeRequestLogs,
+  reanalyzeEntry,
+  searchEntries,
+  setEntryContext,
+  setToken,
+  UnauthorizedError,
+  updateTag,
+} from './api';
+import type {
+  ContextTag,
+  EntryWithFoods,
+  FoodItem,
+  ReanalyzeRequest,
+  ReportQueryParams,
+  RequestLog,
+  ShareLink,
+  WeeklyReportPayload,
+} from './types';
+import { monthsBetween, monthCells, monthLabel } from './calendarUtils';
+
+// YYYY-MM-DD for "today", pinned to the same timezone the backend filters on
+// (America/Sao_Paulo) so the default day matches regardless of the device tz.
+function todayLocal(): string {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo' }).format(new Date());
+}
+
+// The America/Sao_Paulo calendar day (YYYY-MM-DD) of an ISO instant — used to
+// decide which review day a freshly created manual entry belongs to.
+function localDay(iso: string): string {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo' }).format(new Date(iso));
+}
+
+// "now" as a datetime-local value (YYYY-MM-DDTHH:mm) in America/Sao_Paulo, for the
+// manual-entry form default. Minute precision truncates the seconds, so this is
+// always slightly in the past — never tripping the backend's "no future" guard.
+function nowLocalDateTime(): string {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Sao_Paulo',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(new Date());
+  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? '';
+  const hour = get('hour') === '24' ? '00' : get('hour'); // some engines emit "24" at midnight
+  return `${get('year')}-${get('month')}-${get('day')}T${hour}:${get('minute')}`;
+}
+
+// Confidence thresholds from the data-model contract.
+export function confClass(c: number | null): string {
+  if (c === null) return 'conf-none';
+  if (c === 0) return 'conf-zero';
+  if (c >= 0.85) return 'conf-high';
+  if (c >= 0.7) return 'conf-mid';
+  return 'conf-low';
+}
+
+export function pct(c: number): string {
+  return `${Math.round(c * 100)}%`;
+}
+
+// Sum one macro across foods. A macro that is null across every food returns null
+// (not 0 — that would imply data the AI never computed); non-finite values are
+// ignored. Shared by mealTotals (per-card) and dayTotals (page summary) so the
+// null≠0 rule never diverges between the two.
+function sumMacros(
+  foods: FoodItem[],
+  k: 'kcal' | 'protein_g' | 'fat_g' | 'carbs_g'
+): number | null {
+  const vals = foods
+    .map((f) => f[k])
+    .filter((v): v is number => v != null && Number.isFinite(v));
+  return vals.length > 0 ? vals.reduce((a, v) => a + v, 0) : null;
+}
+
+// Format the four macros into the canonical "N kcal · P Xg · G Yg · C Zg" string,
+// omitting any macro that is null. Returns null when nothing is showable.
+function formatMacros(foods: FoodItem[]): string | null {
+  const kcal = sumMacros(foods, 'kcal');
+  const protein = sumMacros(foods, 'protein_g');
+  const fat = sumMacros(foods, 'fat_g');
+  const carbs = sumMacros(foods, 'carbs_g');
+  const parts = [
+    kcal != null ? `${Math.round(kcal)} kcal` : null,
+    protein != null ? `P ${Math.round(protein)}g` : null,
+    fat != null ? `G ${Math.round(fat)}g` : null,
+    carbs != null ? `C ${Math.round(carbs)}g` : null,
+  ].filter(Boolean);
+  return parts.length > 0 ? parts.join(' · ') : null;
+}
+
+// Meal totals from the AI-identified foods. Weight is intentionally omitted:
+// `quantity` is free text (e.g. "1 prato"), not a numeric field. Returns null when
+// there is nothing to show so the row can be skipped — mirrors FoodRow's macros.
+export function mealTotals(foods: FoodItem[]): string | null {
+  if (foods.length === 0) return null;
+  return formatMacros(foods);
+}
+
+// Day summary: aggregate macros across every visible entry's foods, using the same
+// null≠0 rule as the per-card totals. Returns null when there is nothing to show.
+export function dayTotals(entries: EntryWithFoods[]): string | null {
+  const foods = entries.flatMap((e) => e.foods);
+  if (foods.length === 0) return null;
+  return formatMacros(foods);
+}
+
+type SortDir = 'desc' | 'asc';
+
+// Pure creation-order sort: 'desc' = newest first, 'asc' = oldest first.
+function sortByCreated(list: EntryWithFoods[], dir: SortDir): EntryWithFoods[] {
+  return [...list].sort((a, b) => {
+    const diff = new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+    return dir === 'asc' ? diff : -diff;
+  });
+}
+
+// Readable text color (near-black or white) for a HEX #RRGGBB background, by luminance.
+function textOn(hex: string): string {
+  const n = parseInt(hex.slice(1), 16);
+  if (Number.isNaN(n)) return '#fff';
+  const r = (n >> 16) & 255;
+  const g = (n >> 8) & 255;
+  const b = n & 255;
+  const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  return lum > 0.6 ? '#111' : '#fff';
+}
+
+type Tab = 'review' | 'dashboard' | 'tags' | 'share' | 'report' | 'audit';
+
+// Tag filter selection: a specific tag id, or the two synthetic options.
+type TagFilter = 'all' | 'none' | string;
+
+export function App() {
+  const [token, setTokenState] = useState<string | null>(getToken());
+
+  if (!token) {
+    return <TokenGate onSave={(t) => { setToken(t); setTokenState(t); }} />;
+  }
+  return <Shell onLogout={() => { clearToken(); setTokenState(null); }} />;
+}
+
+// Authenticated shell: tab bar switching between the main views. Audit is
+// accessible via ?tab=audit query param or the footer link, not the main nav.
+function Shell({ onLogout }: { onLogout: () => void }) {
+  const [tab, setTab] = useState<Tab>('review');
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('tab') === 'audit') {
+      setTab('audit');
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+  }, []);
+
+  return (
+    <div className="shell">
+      <nav className="tabs">
+        <button
+          className={tab === 'review' ? 'tab active' : 'tab'}
+          onClick={() => setTab('review')}
+        >
+          Revisão
+        </button>
+        <button
+          className={tab === 'dashboard' ? 'tab active' : 'tab'}
+          onClick={() => setTab('dashboard')}
+        >
+          Painel
+        </button>
+        <button
+          className={tab === 'tags' ? 'tab active' : 'tab'}
+          onClick={() => setTab('tags')}
+        >
+          Tags
+        </button>
+        <button
+          className={tab === 'share' ? 'tab active' : 'tab'}
+          onClick={() => setTab('share')}
+        >
+          Compartilhar
+        </button>
+        <button
+          className={tab === 'report' ? 'tab active' : 'tab'}
+          onClick={() => setTab('report')}
+        >
+          Relatório
+        </button>
+      </nav>
+      {tab === 'review' && <Review onLogout={onLogout} />}
+      {tab === 'dashboard' && <Dashboard onLogout={onLogout} />}
+      {tab === 'tags' && <TagsManager onLogout={onLogout} />}
+      {tab === 'share' && <ShareManager onLogout={onLogout} />}
+      {tab === 'audit' && <Audit onLogout={onLogout} />}
+      {tab === 'report' && <WeeklyReportView onLogout={onLogout} />}
+      <footer style={{ textAlign: 'center', padding: 'var(--space-2)' }}>
+        <button
+          className="tab"
+          style={{ color: 'var(--muted)', fontSize: '0.8rem' }}
+          onClick={() => setTab('audit')}
+        >
+          Auditoria
+        </button>
+      </footer>
+    </div>
+  );
+}
+
+type DashboardSlot = { date: string; status: 'loading' | 'done' | 'error'; entries: EntryWithFoods[] };
+type DashboardPeriod = '7d' | '14d' | '30d' | 'custom';
+type DashboardView = 'photowall' | 'timeline' | 'calendar' | 'list';
+export type DayEntry = { id: string; created_at: string; photos: string[]; title: string | null; foods: FoodItem[] };
+
+function addDaysToDate(dateStr: string, days: number): string {
+  const d = new Date(dateStr + 'T12:00:00');
+  d.setDate(d.getDate() + days);
+  const y = d.getFullYear();
+  const mo = String(d.getMonth() + 1).padStart(2, '0');
+  const dy = String(d.getDate()).padStart(2, '0');
+  return `${y}-${mo}-${dy}`;
+}
+
+function getDashboardDays(period: DashboardPeriod, start: string, end: string): string[] {
+  const today = todayLocal();
+  if (period === 'custom') {
+    if (!start || !end || end < start) return [];
+    const diffDays = Math.floor(
+      (new Date(end + 'T12:00:00').getTime() - new Date(start + 'T12:00:00').getTime()) / 86_400_000
+    );
+    const count = Math.min(diffDays + 1, 90);
+    return Array.from({ length: count }, (_, i) => {
+      const d = new Date(start + 'T12:00:00');
+      d.setDate(d.getDate() + i);
+      const y = d.getFullYear();
+      const mo = String(d.getMonth() + 1).padStart(2, '0');
+      const dy = String(d.getDate()).padStart(2, '0');
+      return `${y}-${mo}-${dy}`;
+    }).filter((d) => d <= today);
+  }
+  const n = period === '7d' ? 7 : period === '14d' ? 14 : 30;
+  return Array.from({ length: n }, (_, i) => {
+    const d = new Date(today + 'T12:00:00');
+    d.setDate(d.getDate() - (n - 1 - i));
+    const y = d.getFullYear();
+    const mo = String(d.getMonth() + 1).padStart(2, '0');
+    const dy = String(d.getDate()).padStart(2, '0');
+    return `${y}-${mo}-${dy}`;
+  });
+}
+
+function Dashboard({ onLogout }: { onLogout: () => void }) {
+  const [period, setPeriod] = useState<DashboardPeriod>('7d');
+  const [customStart, setCustomStart] = useState<string>(todayLocal());
+  const [customEnd, setCustomEnd] = useState<string>(todayLocal());
+  const [view, setView] = useState<DashboardView>('photowall');
+  const [slots, setSlots] = useState<DashboardSlot[]>([]);
+  const [tags, setTags] = useState<ContextTag[]>([]);
+
+  useEffect(() => {
+    fetchTags()
+      .then(setTags)
+      .catch((err) => { if (err instanceof UnauthorizedError) onLogout(); });
+  }, [onLogout]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loggedOut = { current: false };
+    const days = getDashboardDays(period, customStart, customEnd);
+    setSlots(days.map((d) => ({ date: d, status: 'loading', entries: [] })));
+    days.forEach((d) => {
+      fetchEntries(d)
+        .then((entries) => {
+          if (cancelled) return;
+          setSlots((prev) => prev.map((s) => s.date === d ? { ...s, status: 'done', entries } : s));
+        })
+        .catch((err) => {
+          if (cancelled) return;
+          if (err instanceof UnauthorizedError) {
+            if (!loggedOut.current) { loggedOut.current = true; onLogout(); }
+            return;
+          }
+          setSlots((prev) => prev.map((s) => s.date === d ? { ...s, status: 'error', entries: [] } : s));
+        });
+    });
+    return () => { cancelled = true; };
+  }, [period, customStart, customEnd, onLogout]);
+
+  const isEmpty = slots.length > 0
+    && slots.every((s) => s.status !== 'loading')
+    && slots.every((s) => s.entries.length === 0);
+  const today = todayLocal();
+
+  const handleEndChange = (newEnd: string) => {
+    const maxEnd = addDaysToDate(customStart, 89);
+    setCustomEnd(newEnd > maxEnd ? maxEnd : newEnd);
+  };
+
+  return (
+    <div className="dashboard">
+      <div className="period-chips">
+        {(['7d', '14d', '30d', 'custom'] as const).map((p) => (
+          <button
+            key={p}
+            className={`chip${period === p ? ' active' : ''}`}
+            onClick={() => setPeriod(p)}
+          >
+            {p === '7d' ? '7 dias' : p === '14d' ? '14 dias' : p === '30d' ? '30 dias' : 'Personalizado'}
+          </button>
+        ))}
+      </div>
+      {period === 'custom' && (
+        <div className="dashboard-custom-dates">
+          <label>
+            <span>De</span>
+            <input
+              type="date"
+              value={customStart}
+              max={today}
+              onChange={(e) => setCustomStart(e.target.value)}
+            />
+          </label>
+          <label>
+            <span>Até</span>
+            <input
+              type="date"
+              value={customEnd}
+              max={today}
+              onChange={(e) => handleEndChange(e.target.value)}
+            />
+          </label>
+        </div>
+      )}
+      <div className="seg">
+        <button
+          className={`seg-btn${view === 'photowall' ? ' active' : ''}`}
+          onClick={() => setView('photowall')}
+        >
+          Parede de Fotos
+        </button>
+        <button
+          className={`seg-btn${view === 'timeline' ? ' active' : ''}`}
+          onClick={() => setView('timeline')}
+        >
+          Timeline
+        </button>
+        <button
+          className={`seg-btn${view === 'calendar' ? ' active' : ''}`}
+          onClick={() => setView('calendar')}
+        >
+          Calendário
+        </button>
+        <button
+          className={`seg-btn${view === 'list' ? ' active' : ''}`}
+          onClick={() => setView('list')}
+        >
+          Lista
+        </button>
+      </div>
+      {isEmpty && <p className="dashboard-empty">Sem registros neste período.</p>}
+      {slots.length > 0 && !isEmpty && (
+        view === 'photowall'
+          ? <PhotoWallView slots={slots} />
+          : view === 'timeline'
+            ? <TimelineView slots={slots} tags={tags} />
+            : view === 'calendar'
+              ? <DashboardCalendarView slots={slots} />
+              : <DashboardListView slots={slots} />
+      )}
+    </div>
+  );
+}
+
+function PhotoWallView({ slots }: { slots: DashboardSlot[] }) {
+  const [modalEntry, setModalEntry] = useState<EntryWithFoods | null>(null);
+  return (
+    <>
+      <div className="photowall-grid">
+        {[...slots].reverse().map((slot) => {
+          if (slot.status === 'loading') {
+            return <div key={slot.date} className="skeleton-cell" aria-hidden="true" />;
+          }
+          if (slot.status !== 'done') return null;
+          return slot.entries
+            .slice()
+            .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+            .map((e) => {
+              const time = new Date(e.created_at).toLocaleTimeString('pt-BR', {
+                hour: '2-digit',
+                minute: '2-digit',
+              });
+              const k = sumMacros(e.foods, 'kcal');
+              const kcalLabel = k != null ? `${Math.round(k)} kcal` : '–';
+              const extraPhotos = e.photos.slice(1, 3);
+              const extraOverflow = e.photos.length > 3 ? e.photos.length - 3 : 0;
+              return (
+                <button key={e.id} className="photowall-cell" onClick={() => setModalEntry(e)}>
+                  {e.photos.length > 0
+                    ? <img src={e.photos[0]} loading="lazy" alt={e.title ?? 'Foto da refeição'} />
+                    : <div className="photowall-cell-ph" role="img" aria-label="Sem foto" />
+                  }
+                  <div className="photowall-scrim" aria-hidden="true" />
+                  <span className="photowall-time">{time}</span>
+                  <span className="photowall-kcal">{kcalLabel}</span>
+                  {extraPhotos.length > 0 && (
+                    <div className="photowall-extra-strip" aria-hidden="true">
+                      {extraPhotos.map((url, i) => (
+                        <img key={i} src={url} alt="" loading="lazy" />
+                      ))}
+                      {extraOverflow > 0 && (
+                        <span className="photowall-extra-badge">+{extraOverflow}</span>
+                      )}
+                    </div>
+                  )}
+                </button>
+              );
+            });
+        })}
+      </div>
+      {modalEntry && <PhotoWallModal entry={modalEntry} onClose={() => setModalEntry(null)} />}
+    </>
+  );
+}
+
+function PhotoWallModal({ entry, onClose }: { entry: EntryWithFoods; onClose: () => void }) {
+  const sheetRef = useRef<HTMLDivElement>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+
+  useEffect(() => {
+    const sheet = sheetRef.current;
+    if (!sheet) return;
+
+    const focusable = Array.from(
+      sheet.querySelectorAll<HTMLElement>('button, [href], input, [tabindex]:not([tabindex="-1"])')
+    );
+    focusable[0]?.focus();
+
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') {
+        onCloseRef.current();
+        return;
+      }
+      if (e.key === 'Tab') {
+        if (focusable.length === 0) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (e.shiftKey) {
+          if (document.activeElement === first) {
+            e.preventDefault();
+            last.focus();
+          }
+        } else {
+          if (document.activeElement === last) {
+            e.preventDefault();
+            first.focus();
+          }
+        }
+      }
+    }
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
+  return (
+    <div className="pw-modal-backdrop" onClick={onClose}>
+      <div
+        ref={sheetRef}
+        className="pw-modal-sheet"
+        role="dialog"
+        aria-modal="true"
+        aria-label={entry.title ?? 'Detalhe da refeição'}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="pw-modal-top">
+          <button className="pw-modal-close" aria-label="Fechar" onClick={onClose}>✕</button>
+          {entry.photos.length > 1
+            ? (
+              <div className="pw-modal-strip">
+                {entry.photos.map((url, i) => (
+                  <img key={i} src={url} alt={i === 0 ? (entry.title ?? 'Foto da refeição') : ''} loading="lazy" />
+                ))}
+              </div>
+            )
+            : entry.photos.length === 1
+              ? <img className="pw-modal-photo" src={entry.photos[0]} alt={entry.title ?? 'Foto da refeição'} loading="lazy" />
+              : <div className="pw-modal-photo pw-modal-ph" role="img" aria-label="Sem foto" />
+          }
+        </div>
+        <ul className="pw-modal-foods">
+          {entry.foods.map((f) => (
+            <li key={f.id}>
+              <span>{f.description}{f.quantity ? ` (${f.quantity})` : ''}</span>
+              <span>{f.kcal != null ? `${Math.round(f.kcal)} kcal` : '–'}</span>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
+export function DayModal({ entries, onClose }: { entries: DayEntry[]; onClose: () => void }) {
+  const sheetRef = useRef<HTMLDivElement>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+
+  useEffect(() => {
+    const sheet = sheetRef.current;
+    if (!sheet) return;
+    const focusable = Array.from(
+      sheet.querySelectorAll<HTMLElement>('button, [href], input, [tabindex]:not([tabindex="-1"])')
+    );
+    focusable[0]?.focus();
+
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') { onCloseRef.current(); return; }
+      if (e.key === 'Tab') {
+        if (focusable.length === 0) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (e.shiftKey) {
+          if (document.activeElement === first) { e.preventDefault(); last.focus(); }
+        } else {
+          if (document.activeElement === last) { e.preventDefault(); first.focus(); }
+        }
+      }
+    }
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
+  return (
+    <div className="pw-modal-backdrop" onClick={onClose}>
+      <div
+        ref={sheetRef}
+        className="pw-modal-sheet day-modal-sheet"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Entradas do dia"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="day-modal-header">
+          <button className="pw-modal-close" aria-label="Fechar" onClick={onClose}>✕</button>
+        </div>
+        <ul className="day-modal-list">
+          {entries.map((entry) => {
+            const time = new Date(entry.created_at).toLocaleTimeString('pt-BR', {
+              timeZone: 'America/Sao_Paulo',
+              hour: '2-digit',
+              minute: '2-digit',
+            });
+            const macros = mealTotals(entry.foods);
+            return (
+              <li key={entry.id} className="day-modal-entry">
+                {entry.photos.length > 0
+                  ? <img className="day-modal-thumb" src={entry.photos[0]} alt={entry.title ?? 'Foto'} loading="lazy" />
+                  : <div className="day-modal-thumb day-modal-thumb-ph" />
+                }
+                <div className="day-modal-info">
+                  <span className="day-modal-time">{time}</span>
+                  <strong className="day-modal-title">{entry.title ?? 'Sem título'}</strong>
+                  {macros && <span className="day-modal-macros">{macros}</span>}
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
+const RTL_START = 6;
+const RTL_END = 23;
+const RTL_TOTAL = (RTL_END - RTL_START) * 4; // 68 slots (06:00–22:45)
+const RTL_WEEKDAYS = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
+const RTL_TICKS = Array.from({ length: RTL_TOTAL + 1 }, (_, i) => {
+  const isHour = i % 4 === 0;
+  const hour = RTL_START + Math.floor(i / 4);
+  return { i, isHour, hour, showLabel: isHour && i % 8 === 0 };
+});
+
+function TimelineView({ slots, tags }: { slots: DashboardSlot[]; tags: ContextTag[] }) {
+  const [modalEntry, setModalEntry] = useState<EntryWithFoods | null>(null);
+  const tagsById = new Map(tags.map((t) => [t.id, t]));
+
+  function dayParts(dateStr: string): [string, string, boolean] {
+    const [y, m, d] = dateStr.split('-').map(Number);
+    const dt = new Date(y, m - 1, d);
+    const dow = dt.getDay();
+    return [
+      RTL_WEEKDAYS[dow],
+      `${String(d).padStart(2, '0')}/${String(m).padStart(2, '0')}`,
+      dow === 0 || dow === 6,
+    ];
+  }
+
+  function entryToSlot(createdAt: string): number {
+    const dt = new Date(createdAt);
+    const slot = (dt.getHours() - RTL_START) * 4 + Math.floor(dt.getMinutes() / 15);
+    return Math.max(0, Math.min(RTL_TOTAL - 1, slot));
+  }
+
+  return (
+    <>
+      <div className="rtl-wrap">
+        {slots.map((slot) => {
+          if (slot.status === 'loading') {
+            return <div key={slot.date} className="skeleton-item rtl-skeleton" aria-hidden="true" />;
+          }
+          if (slot.status !== 'done' || slot.entries.length === 0) return null;
+
+          const [weekday, datePart, isWeekend] = dayParts(slot.date);
+          const sorted = [...slot.entries].sort(
+            (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
+          );
+
+          const grouped = new Map<number, EntryWithFoods[]>();
+          for (const e of sorted) {
+            const s = entryToSlot(e.created_at);
+            if (!grouped.has(s)) grouped.set(s, []);
+            grouped.get(s)!.push(e);
+          }
+
+          const slotTagColor = new Map<number, string>();
+          for (const [s, entries] of grouped.entries()) {
+            const color = entries[0].context_tag_id
+              ? tagsById.get(entries[0].context_tag_id)?.color
+              : undefined;
+            if (color) slotTagColor.set(s, color);
+          }
+
+          const maxStack = Math.max(
+            ...Array.from(grouped.values()).map((g) =>
+              g.reduce((n, e) => n + Math.max(1, e.photos.length), 0),
+            ),
+          );
+          const entriesHeight = maxStack * 66 + (maxStack - 1) * 4 + 12;
+
+          return (
+            <div key={slot.date} className={`rtl-day${isWeekend ? ' rtl-day-weekend' : ''}`}>
+              <div className="rtl-label" aria-label={`${weekday} ${datePart}`}>
+                <span className="rtl-label-day">{weekday}</span>
+                <span className="rtl-label-date">{datePart}</span>
+              </div>
+              <div className="rtl-content">
+                <div className="rtl-inner">
+                  <div className="rtl-ruler" role="presentation" aria-hidden="true">
+                    {RTL_TICKS.map(({ i, isHour, hour, showLabel }) => {
+                      const tickColor = slotTagColor.get(i);
+                      return (
+                        <div key={i} className={`rtl-tick${isHour ? ' rtl-tick-hour' : ''}${grouped.has(i) ? ' rtl-tick-active' : ''}`}>
+                          {showLabel && (
+                            <span className="rtl-hour-label">{String(hour).padStart(2, '0')}</span>
+                          )}
+                          <span
+                            className="rtl-tick-mark"
+                            style={tickColor ? { background: tickColor } : undefined}
+                          />
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div className="rtl-entries" style={{ height: entriesHeight }}>
+                    {Array.from(grouped.entries()).reverse().map(([slotIdx, entries]) => (
+                      <div
+                        key={slotIdx}
+                        className="rtl-entry-group"
+                        style={{ left: `${(slotIdx / RTL_TOTAL) * 100}%` }}
+                      >
+                        {entries.flatMap((e) => {
+                          const tagColor = e.context_tag_id
+                            ? tagsById.get(e.context_tag_id)?.color
+                            : undefined;
+                          const photos = e.photos.length > 0 ? e.photos : [null];
+                          return photos.map((photo, pi) => (
+                            <button
+                              key={`${e.id}-${pi}`}
+                              className="rtl-card"
+                              onClick={() => setModalEntry(e)}
+                              aria-label={e.title ?? 'Ver refeição'}
+                              style={tagColor ? { borderColor: tagColor } : undefined}
+                            >
+                              {photo ? (
+                                <img src={photo} alt={e.title ?? 'Foto'} loading="lazy" />
+                              ) : (
+                                <div
+                                  className="rtl-card-ph"
+                                  role="img"
+                                  aria-label="Sem foto"
+                                  style={tagColor ? { background: `${tagColor}1a` } : undefined}
+                                />
+                              )}
+                            </button>
+                          ));
+                        })}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      {modalEntry && <PhotoWallModal entry={modalEntry} onClose={() => setModalEntry(null)} />}
+    </>
+  );
+}
+
+function fmtDateBR(d: string): string {
+  const [y, m, day] = d.split('-');
+  return `${day}/${m}/${y}`;
+}
+
+const CAL_WEEKDAYS = ['D', 'S', 'T', 'Q', 'Q', 'S', 'S'];
+
+function DashboardCalendarView({ slots }: { slots: DashboardSlot[] }) {
+  const [dayModal, setDayModal] = useState<DayEntry[] | null>(null);
+
+  const byDay = useMemo(() => {
+    const done = new Map<string, EntryWithFoods[]>();
+    const loading = new Set<string>();
+    for (const slot of slots) {
+      if (slot.status === 'done' && slot.entries.length > 0) done.set(slot.date, slot.entries);
+      else if (slot.status === 'loading') loading.add(slot.date);
+    }
+    return { done, loading };
+  }, [slots]);
+
+  const start = slots[0]?.date ?? todayLocal();
+  const end = slots[slots.length - 1]?.date ?? todayLocal();
+  const months = useMemo(() => monthsBetween(start, end), [start, end]);
+
+  return (
+    <>
+      <div className="cal-wrap">
+        {months.map(({ y, m }) => (
+          <div className="cal-month" key={`${y}-${m}`}>
+            <h2 className="cal-title">{monthLabel(y, m)}</h2>
+            <div className="cal-grid">
+              {CAL_WEEKDAYS.map((w, i) => (
+                <div className="cal-weekday" key={i}>{w}</div>
+              ))}
+              {monthCells(y, m).map((day, i) => {
+                if (day === null) {
+                  return <div className="cal-cell empty" key={`b${i}`} />;
+                }
+                const inRange = day >= start && day <= end;
+                const isLoading = inRange && byDay.loading.has(day);
+                const dayEntries = byDay.done.get(day) ?? [];
+                const thumbs = dayEntries.map((e) => e.photos[0]).filter(Boolean).slice(0, 3);
+                const overflow = dayEntries.length - thumbs.length;
+                const hasEntriesNoPhoto = inRange && dayEntries.length > 0 && thumbs.length === 0;
+                const clickable = inRange && dayEntries.length > 0;
+                const cls = `cal-cell${inRange ? '' : ' out'}${isLoading ? ' cal-cell-loading' : ''}`;
+                const inner = (
+                  <>
+                    <span className="cal-day">{Number(day.slice(8))}</span>
+                    {thumbs.length > 0 && (
+                      <div className="cal-thumbs">
+                        {thumbs.map((url, j) => <img key={j} src={url} alt="" loading="lazy" />)}
+                        {overflow > 0 && <span className="cal-more">+{overflow}</span>}
+                      </div>
+                    )}
+                    {hasEntriesNoPhoto && <div className="cal-dot" aria-label="Tem entradas sem foto" />}
+                  </>
+                );
+                return clickable
+                  ? <button className={cls} key={day} onClick={() => setDayModal(dayEntries)}>{inner}</button>
+                  : <div className={cls} key={day}>{inner}</div>;
+              })}
+            </div>
+          </div>
+        ))}
+      </div>
+      {dayModal && <DayModal entries={dayModal} onClose={() => setDayModal(null)} />}
+    </>
+  );
+}
+
+function DashboardListView({ slots }: { slots: DashboardSlot[] }) {
+  return (
+    <div className="shared-list">
+      {[...slots].reverse().map((slot) => {
+        if (slot.status === 'loading') {
+          return <div key={slot.date} className="skeleton-item" aria-hidden="true" />;
+        }
+        if (slot.status !== 'done' || slot.entries.length === 0) return null;
+        const sorted = slot.entries
+          .slice()
+          .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+        const dayTotalsStr = dayTotals(sorted);
+        return (
+          <section className="shared-day" key={slot.date}>
+            <div className="shared-day-head">
+              <h2>{fmtDateBR(slot.date)}</h2>
+              {dayTotalsStr && <span className="totals">{dayTotalsStr}</span>}
+            </div>
+            <ul className="tl-list">
+              {sorted.map((entry) => {
+                const time = new Date(entry.created_at).toLocaleTimeString('pt-BR', {
+                  timeZone: 'America/Sao_Paulo',
+                  hour: '2-digit',
+                  minute: '2-digit',
+                });
+                const macros = mealTotals(entry.foods);
+                return (
+                  <li key={entry.id} className="tl-item">
+                    {entry.photos.length > 0
+                      ? <div className="tl-thumb-wrap">
+                          <img className="tl-thumb" src={entry.photos[0]} alt={entry.title ?? 'Foto'} loading="lazy" />
+                          {entry.photos.length > 1 && (
+                            <span className="tl-multi-badge" aria-hidden="true">+{entry.photos.length - 1}</span>
+                          )}
+                        </div>
+                      : <div className="tl-thumb tl-thumb-ph" role="img" aria-label="Sem foto" />
+                    }
+                    <div className="tl-body">
+                      <span className="tl-time">{time}</span>
+                      <div className="tl-title-row">
+                        <span className="tl-title">{entry.title ?? '—'}</span>
+                      </div>
+                      {macros && <div className="tl-macros">{macros}</div>}
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          </section>
+        );
+      })}
+    </div>
+  );
+}
+
+function TokenGate({ onSave }: { onSave: (token: string) => void }) {
+  const [value, setValue] = useState('');
+  return (
+    <div className="gate">
+      <h1>FoodLog</h1>
+      <p>Cole seu token de acesso para revisar as entradas do dia.</p>
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          const t = value.trim();
+          if (t) onSave(t);
+        }}
+      >
+        <input
+          type="password"
+          placeholder="api_token"
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          autoFocus
+        />
+        <button type="submit" disabled={!value.trim()}>Entrar</button>
+      </form>
+    </div>
+  );
+}
+
+type HistoryDot = {
+  date: string;
+  status: 'loading' | 'empty' | 'reviewed' | 'pending';
+  total: number;
+  pending: number;
+};
+
+function sevenDaysBefore(dateStr: string): string[] {
+  return Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(dateStr + 'T12:00:00');
+    d.setDate(d.getDate() - (i + 1));
+    const y = d.getFullYear();
+    const mo = String(d.getMonth() + 1).padStart(2, '0');
+    const dy = String(d.getDate()).padStart(2, '0');
+    return `${y}-${mo}-${dy}`;
+  });
+}
+
+function dotAriaLabel(dot: HistoryDot): string {
+  const d = new Date(dot.date + 'T12:00:00');
+  const dayName = d.toLocaleDateString('pt-BR', { weekday: 'long' });
+  const day = String(d.getDate()).padStart(2, '0');
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const dmStr = `${day}/${month}`;
+  if (dot.status === 'loading') return `${dayName} ${dmStr}: carregando`;
+  if (dot.total === 0) return `${dayName} ${dmStr}: sem entradas`;
+  const entryWord = dot.total === 1 ? 'entrada' : 'entradas';
+  if (dot.pending === 0) return `${dayName} ${dmStr}: ${dot.total} ${entryWord}`;
+  const pendWord = dot.pending === 1 ? 'pendente de revisão' : 'pendentes de revisão';
+  return `${dayName} ${dmStr}: ${dot.total} ${entryWord}, ${dot.pending} ${pendWord}`;
+}
+
+function Review({ onLogout }: { onLogout: () => void }) {
+  const [date, setDate] = useState<string>(todayLocal());
+  const [entries, setEntries] = useState<EntryWithFoods[]>([]);
+  const [tags, setTags] = useState<ContextTag[]>([]);
+  const [sortDir, setSortDir] = useState<SortDir>('desc');
+  const [tagFilter, setTagFilter] = useState<TagFilter>('all');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [showManual, setShowManual] = useState(false);
+  const [historyDots, setHistoryDots] = useState<HistoryDot[]>([]);
+
+  // CAP-8: food search across full history
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<EntryWithFoods[] | null>(null);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const isSearchMode = searchQuery.trim().length >= 2;
+
+  // Tags rarely change; load once. A failure here is non-fatal — the chips just
+  // won't render and review still works.
+  useEffect(() => {
+    fetchTags()
+      .then(setTags)
+      .catch((err) => {
+        if (err instanceof UnauthorizedError) onLogout();
+      });
+  }, [onLogout]);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const data = await fetchEntries(date);
+      setEntries(data);
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        onLogout();
+        return;
+      }
+      setError((err as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }, [date, onLogout]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  // CAP-8: fetch search results whenever query changes (debounced 300 ms).
+  // setSearchLoading is deferred inside the timer so cleanup before 300ms never
+  // leaves the loading spinner stuck.
+  useEffect(() => {
+    const q = searchQuery.trim();
+    if (q.length < 2) {
+      setSearchResults(null);
+      setSearchError(null);
+      return;
+    }
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      if (cancelled) return;
+      setSearchLoading(true);
+      setSearchError(null);
+      searchEntries(q)
+        .then((r) => { if (!cancelled) setSearchResults(r); })
+        .catch((err) => {
+          if (cancelled) return;
+          if (err instanceof UnauthorizedError) onLogout();
+          else setSearchError((err as Error).message);
+        })
+        .finally(() => { if (!cancelled) setSearchLoading(false); });
+    }, 300);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [searchQuery, onLogout]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const dates = sevenDaysBefore(date);
+    setHistoryDots(dates.map((d) => ({ date: d, status: 'loading', total: 0, pending: 0 })));
+    dates.forEach((d, idx) => {
+      fetchEntries(d)
+        .then((entries) => {
+          if (cancelled) return;
+          const pendingCount = entries.filter((e) => !e.reviewed).length;
+          const status: HistoryDot['status'] =
+            entries.length === 0 ? 'empty' : pendingCount > 0 ? 'pending' : 'reviewed';
+          setHistoryDots((prev) => {
+            const next = [...prev];
+            next[idx] = { date: d, status, total: entries.length, pending: pendingCount };
+            return next;
+          });
+        })
+        .catch((err) => {
+          if (cancelled) return;
+          if (err instanceof UnauthorizedError) {
+            onLogout();
+            return;
+          }
+          setHistoryDots((prev) => {
+            const next = [...prev];
+            next[idx] = { date: d, status: 'empty', total: 0, pending: 0 };
+            return next;
+          });
+        });
+    });
+    return () => { cancelled = true; };
+  }, [date, onLogout]);
+
+  const handleAccept = useCallback(
+    async (id: string) => {
+      try {
+        await acceptEntry(id);
+        setEntries((prev) => prev.map((e) => (e.id === id ? { ...e, reviewed: true } : e)));
+        setSearchResults((prev) => prev ? prev.map((e) => (e.id === id ? { ...e, reviewed: true } : e)) : prev);
+      } catch (err) {
+        if (err instanceof UnauthorizedError) {
+          onLogout();
+          return;
+        }
+        setError((err as Error).message);
+      }
+    },
+    [onLogout]
+  );
+
+  const handleDelete = useCallback(
+    async (id: string) => {
+      if (!window.confirm('Excluir esta entrada e seus alimentos? Não dá para desfazer.')) {
+        return;
+      }
+      try {
+        await deleteEntry(id);
+        setEntries((prev) => prev.filter((e) => e.id !== id));
+        setSearchResults((prev) => prev ? prev.filter((e) => e.id !== id) : prev);
+      } catch (err) {
+        if (err instanceof UnauthorizedError) {
+          onLogout();
+          return;
+        }
+        setError((err as Error).message);
+      }
+    },
+    [onLogout]
+  );
+
+  // CAP-4: re-run the AI with the user's correction, then merge the returned view
+  // back into the card (new foods, reviewed:false). Keeps user_id from the existing
+  // entry since the view does not carry it. Updated in place (no re-sort) so the card
+  // the user just edited stays put — matches handleAccept; it re-sorts on next load.
+  const handleReanalyze = useCallback(
+    async (id: string, payload: ReanalyzeRequest) => {
+      try {
+        const view = await reanalyzeEntry(id, payload);
+        setEntries((prev) => prev.map((e) => (e.id === id ? { ...e, ...view } : e)));
+        setSearchResults((prev) => prev ? prev.map((e) => (e.id === id ? { ...e, ...view } : e)) : prev);
+      } catch (err) {
+        if (err instanceof UnauthorizedError) {
+          onLogout();
+        }
+        throw err;
+      }
+    },
+    [onLogout]
+  );
+
+  // CAP-9: set/clear the entry's context tag (one touch). Updates only the context
+  // fields in place so the card stays put and other state is untouched.
+  const handleSetContext = useCallback(
+    async (id: string, tagId: string | null) => {
+      try {
+        const view = await setEntryContext(id, tagId);
+        setEntries((prev) =>
+          prev.map((e) =>
+            e.id === id ? { ...e, context: view.context, context_tag_id: view.context_tag_id } : e
+          )
+        );
+        setSearchResults((prev) =>
+          prev
+            ? prev.map((e) =>
+                e.id === id ? { ...e, context: view.context, context_tag_id: view.context_tag_id } : e
+              )
+            : prev
+        );
+      } catch (err) {
+        if (err instanceof UnauthorizedError) {
+          onLogout();
+          return;
+        }
+        setError((err as Error).message);
+      }
+    },
+    [onLogout]
+  );
+
+  // Create a manual entry from the form, then surface it: jump to the entry's
+  // (SP-local) day if it differs from the one shown, else refetch the current day.
+  // Re-throws on failure so the form can show the error and stay open.
+  const handleCreateManual = useCallback(
+    async (input: { description?: string; createdAt?: string; photos?: File[] }) => {
+      try {
+        const view = await createManualEntry(input);
+        setShowManual(false);
+        const day = localDay(view.created_at);
+        if (day === date) {
+          await load();
+        } else {
+          setDate(day); // different day → switch the selector; the load effect refetches
+        }
+      } catch (err) {
+        if (err instanceof UnauthorizedError) {
+          onLogout();
+        }
+        throw err;
+      }
+    },
+    [date, load, onLogout]
+  );
+
+  const pending = useMemo(() => entries.filter((e) => !e.reviewed).length, [entries]);
+
+  // Tag id → tag, so each card can resolve its own color/name without a new payload field.
+  const tagsById = useMemo(() => new Map(tags.map((t) => [t.id, t])), [tags]);
+
+  // Apply the tag filter, then the creation-order sort. Pending count above stays
+  // over ALL entries (it is a backlog signal, not a view of the filtered list).
+  const visible = useMemo(() => {
+    const filtered = entries.filter((e) => {
+      if (tagFilter === 'all') return true;
+      if (tagFilter === 'none') return e.context_tag_id === null;
+      return e.context_tag_id === tagFilter;
+    });
+    return sortByCreated(filtered, sortDir);
+  }, [entries, tagFilter, sortDir]);
+
+  // Mini-resumo: aggregate all entries for the day (not filtered by tag).
+  const dayFoods = useMemo(() => entries.flatMap((e) => e.foods), [entries]);
+  const [dayKcal, dayProtein, dayCarbs, dayFat] = useMemo(
+    () => [
+      sumMacros(dayFoods, 'kcal'),
+      sumMacros(dayFoods, 'protein_g'),
+      sumMacros(dayFoods, 'carbs_g'),
+      sumMacros(dayFoods, 'fat_g'),
+    ],
+    [dayFoods]
+  );
+
+  return (
+    <div className="review">
+      <header>
+        <div className="header-row">
+          <h1>Revisão diária</h1>
+          <button className="link" onClick={onLogout}>Sair</button>
+        </div>
+        <div className="controls">
+          <input
+            type="date"
+            value={date}
+            onChange={(e) => {
+              // Ignore a cleared input so the list always matches the visible day.
+              if (e.target.value) setDate(e.target.value);
+            }}
+          />
+          <button
+            type="button"
+            className="link sort-toggle"
+            onClick={() => setSortDir((d) => (d === 'desc' ? 'asc' : 'desc'))}
+            title="Alternar ordem por data de criação"
+          >
+            {sortDir === 'desc' ? '↓ Mais recentes' : '↑ Mais antigas'}
+          </button>
+          <span className="pending">{pending} pendente(s)</span>
+          <button
+            type="button"
+            className="new-entry"
+            onClick={() => setShowManual((s) => !s)}
+          >
+            + Novo registro
+          </button>
+        </div>
+        <div className="search-bar">
+          <input
+            type="search"
+            placeholder="Buscar alimento no histórico…"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+          />
+          {searchQuery && (
+            <button type="button" className="link" onClick={() => setSearchQuery('')}>
+              Limpar
+            </button>
+          )}
+        </div>
+        {!isSearchMode && tags.length > 0 && (
+          <div className="seg tag-filter">
+            <button
+              type="button"
+              className={tagFilter === 'all' ? 'seg-btn active' : 'seg-btn'}
+              onClick={() => setTagFilter('all')}
+            >
+              Todas
+            </button>
+            {tags.map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                className={tagFilter === t.id ? 'seg-btn active' : 'seg-btn'}
+                onClick={() => setTagFilter(t.id)}
+              >
+                <span className="dot-color" style={{ background: t.color }} />
+                {t.name}
+              </button>
+            ))}
+            <button
+              type="button"
+              className={tagFilter === 'none' ? 'seg-btn active' : 'seg-btn'}
+              onClick={() => setTagFilter('none')}
+            >
+              Sem tag
+            </button>
+          </div>
+        )}
+      </header>
+
+      {showManual && !isSearchMode && (
+        <ManualEntryForm onSubmit={handleCreateManual} onCancel={() => setShowManual(false)} />
+      )}
+
+      {/* CAP-8: search mode */}
+      {isSearchMode ? (
+        <>
+          {searchError && <div className="banner error">{searchError}</div>}
+          {searchLoading && <div className="banner">Buscando…</div>}
+          {!searchLoading && !searchError && searchResults !== null && searchResults.length === 0 && (
+            <div className="empty">Nenhum resultado para "{searchQuery.trim()}".</div>
+          )}
+          {!searchLoading && !searchError && searchResults && searchResults.length > 0 && (
+            <div className="day-summary">
+              <span className="day-summary-count">
+                {searchResults.length} {searchResults.length === 1 ? 'resultado' : 'resultados'}
+              </span>
+            </div>
+          )}
+          <ul className="cards">
+            {(searchResults ?? []).map((entry) => (
+              <SearchEntryCard
+                key={entry.id}
+                entry={entry}
+                tags={tags}
+                currentTag={entry.context_tag_id ? tagsById.get(entry.context_tag_id) ?? null : null}
+                onAccept={handleAccept}
+                onReanalyze={handleReanalyze}
+                onDelete={handleDelete}
+                onSetContext={handleSetContext}
+              />
+            ))}
+          </ul>
+        </>
+      ) : (
+        <>
+          {error && <div className="banner error">{error}</div>}
+          {loading && <div className="banner">Carregando…</div>}
+          {!loading && !error && entries.length === 0 && (
+            <div className="empty">Nenhuma entrada neste dia.</div>
+          )}
+          {!loading && !error && entries.length > 0 && visible.length === 0 && (
+            <div className="empty">Nenhuma entrada para este filtro.</div>
+          )}
+
+          {!loading && !error && (
+            <div className="day-summary">
+              {entries.length === 0 ? (
+                <span className="day-summary-empty">Sem registros neste dia.</span>
+              ) : (
+                <div className="day-summary-macros">
+                  {dayKcal != null && (
+                    <span className="macro-item">
+                      <span className="macro-label">kcal</span>
+                      <span className="macro-value">{Math.round(dayKcal)}</span>
+                    </span>
+                  )}
+                  {dayProtein != null && (
+                    <span className="macro-item">
+                      <span className="macro-label">P</span>
+                      <span className="macro-value">{Math.round(dayProtein)}g</span>
+                    </span>
+                  )}
+                  {dayCarbs != null && (
+                    <span className="macro-item">
+                      <span className="macro-label">C</span>
+                      <span className="macro-value">{Math.round(dayCarbs)}g</span>
+                    </span>
+                  )}
+                  {dayFat != null && (
+                    <span className="macro-item">
+                      <span className="macro-label">G</span>
+                      <span className="macro-value">{Math.round(dayFat)}g</span>
+                    </span>
+                  )}
+                </div>
+              )}
+              <div className="day-history-dots">
+                {historyDots.map((dot) => (
+                  <button
+                    key={dot.date}
+                    className={`history-dot${dot.status === 'reviewed' ? ' reviewed' : dot.status === 'pending' ? ' pending' : dot.status === 'loading' ? ' loading' : ''}`}
+                    aria-label={dotAriaLabel(dot)}
+                    onClick={() => setDate(dot.date)}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+
+          <ul className="cards">
+            {visible.map((entry) => (
+              <EntryCard
+                key={entry.id}
+                entry={entry}
+                tags={tags}
+                currentTag={entry.context_tag_id ? tagsById.get(entry.context_tag_id) ?? null : null}
+                onAccept={handleAccept}
+                onReanalyze={handleReanalyze}
+                onDelete={handleDelete}
+                onSetContext={handleSetContext}
+              />
+            ))}
+          </ul>
+        </>
+      )}
+    </div>
+  );
+}
+
+// Manual-entry form: free-text description (required), an optional photo set and a
+// date/time (defaults to now in SP). Submitting runs the synchronous AI analysis,
+// so the button shows a busy state until the new entry comes back.
+function ManualEntryForm({
+  onSubmit,
+  onCancel,
+}: {
+  onSubmit: (input: { description?: string; createdAt?: string; photos?: File[] }) => Promise<void>;
+  onCancel: () => void;
+}) {
+  const [description, setDescription] = useState('');
+  const [when, setWhen] = useState<string>(nowLocalDateTime());
+  const [photos, setPhotos] = useState<File[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const hasContent = description.trim().length > 0 || photos.length > 0;
+
+  const submit = async () => {
+    if (!hasContent || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      // datetime-local is São Paulo wall-clock time. Pin it to SP's fixed offset
+      // (-03:00 — Brazil has no DST since 2019) so the instant is correct regardless
+      // of the device timezone. Empty → omit so the backend's DEFAULT now() applies.
+      const createdAt = when ? new Date(`${when}:00-03:00`).toISOString() : undefined;
+      const desc = description.trim() || undefined;
+      await onSubmit({ description: desc, createdAt, photos });
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="manual-form">
+      <h2>Novo registro manual</h2>
+      <label>
+        Foto
+        <input
+          type="file"
+          accept="image/*"
+          multiple
+          autoFocus
+          onChange={(e) => setPhotos(e.target.files ? Array.from(e.target.files) : [])}
+        />
+      </label>
+      <label>
+        O que você comeu? <span style={{ fontWeight: 400 }}>(opcional)</span>
+        <textarea
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          placeholder="Ex.: 2 ovos mexidos, uma fatia de pão integral e um café com leite"
+          rows={3}
+        />
+      </label>
+      <label>
+        Data e hora
+        <input
+          type="datetime-local"
+          value={when}
+          max={nowLocalDateTime()}
+          onChange={(e) => setWhen(e.target.value)}
+        />
+      </label>
+      {error && <div className="banner error">{error}</div>}
+      <div className="manual-actions">
+        <button type="button" onClick={() => void submit()} disabled={!hasContent || busy}>
+          {busy ? 'Analisando…' : 'Criar e analisar'}
+        </button>
+        <button type="button" className="link" onClick={onCancel} disabled={busy}>
+          Cancelar
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// One editable food in the correction form: description + quantity, plus a stable
+// key so React preserves inputs across re-renders even after a deletion.
+interface EditFood {
+  key: string;
+  description: string;
+  quantity: string;
+}
+
+function EntryCard({
+  entry,
+  tags,
+  currentTag,
+  onAccept,
+  onReanalyze,
+  onDelete,
+  onSetContext,
+}: {
+  entry: EntryWithFoods;
+  tags: ContextTag[];
+  currentTag: ContextTag | null;
+  onAccept: (id: string) => void;
+  onReanalyze: (id: string, payload: ReanalyzeRequest) => Promise<void>;
+  onDelete: (id: string) => void;
+  onSetContext: (id: string, tagId: string | null) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [editFoods, setEditFoods] = useState<EditFood[]>([]);
+  const [foodsDirty, setFoodsDirty] = useState(false);
+  const [note, setNote] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+
+  const time = new Date(entry.created_at).toLocaleTimeString('pt-BR', {
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+  const totals = mealTotals(entry.foods);
+
+  const startEdit = () => {
+    setEditFoods(
+      entry.foods.map((f) => ({
+        key: f.id,
+        description: f.description,
+        quantity: f.quantity ?? '',
+      }))
+    );
+    setFoodsDirty(false);
+    setNote('');
+    setErr(null);
+    setEditing(true);
+  };
+
+  const cancelEdit = () => {
+    setEditing(false);
+    setErr(null);
+  };
+
+  const updateFood = (key: string, field: 'description' | 'quantity', value: string) => {
+    setEditFoods((prev) => prev.map((f) => (f.key === key ? { ...f, [field]: value } : f)));
+    setFoodsDirty(true);
+  };
+
+  const removeFood = (key: string) => {
+    setEditFoods((prev) => prev.filter((f) => f.key !== key));
+    setFoodsDirty(true);
+  };
+
+  const submit = async () => {
+    // Mirror the backend contract: send `foods` only when the user actually edited
+    // them (otherwise the unchanged list would override a pure free-text correction);
+    // send `correction` only when there is text. At least one must be present.
+    const payload: ReanalyzeRequest = {};
+    if (foodsDirty) {
+      payload.foods = editFoods
+        .filter((f) => f.description.trim())
+        .map((f) => ({
+          description: f.description.trim(),
+          quantity: f.quantity.trim() ? f.quantity.trim() : null,
+        }));
+    }
+    if (note.trim()) {
+      payload.correction = note.trim();
+    }
+    if (!payload.correction && (!payload.foods || payload.foods.length === 0)) {
+      setErr('Edite algum alimento ou escreva uma correção.');
+      return;
+    }
+
+    setBusy(true);
+    setErr(null);
+    try {
+      await onReanalyze(entry.id, payload);
+      setEditing(false);
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <li className={`card ${entry.reviewed ? 'reviewed' : ''}`}>
+      <div
+        className={`conf-border ${confClass(entry.ai_confidence_overall)}`}
+        aria-label={`Confiança da IA: ${entry.ai_confidence_overall.toFixed(2)}`}
+      />
+      <div className="photos">
+        {entry.photos.length > 0
+          ? entry.photos.map((url, i) => (
+              <img key={i} src={url} alt={`Foto ${i + 1}`} loading="lazy" />
+            ))
+          : <div className="photo-placeholder" role="img" aria-label="Sem foto" />}
+        {entry.reviewed && <span className="reviewed-check" aria-hidden="true">✓</span>}
+      </div>
+      <div className="card-body">
+        <div className="card-head">
+          <div>
+            <div>
+              <strong>{entry.title ?? 'Sem título'}</strong>
+              <span className="time">{time}</span>
+              {entry.ai_confidence_overall > 0 && (
+                <span className={`conf-pct ${confClass(entry.ai_confidence_overall)}`}>
+                  {pct(entry.ai_confidence_overall)}
+                </span>
+              )}
+            </div>
+            {totals && <div className="totals">{totals}</div>}
+          </div>
+        </div>
+
+        {!editing ? (
+          <>
+            {entry.foods.length === 0 ? (
+              <p className="no-foods">IA não identificou alimentos.</p>
+            ) : (
+              <ul className="foods">
+                {entry.foods.map((f) => (
+                  <FoodRow key={f.id} food={f} />
+                ))}
+              </ul>
+            )}
+            {tags.length > 0 && (
+              <div className="context">
+                {currentTag ? (
+                  <button
+                    type="button"
+                    className="tag-badge"
+                    style={{ background: currentTag.color, color: textOn(currentTag.color) }}
+                    onClick={() => setPickerOpen((o) => !o)}
+                    title="Trocar ou limpar a tag"
+                  >
+                    {currentTag.name}
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="tag-badge empty"
+                    onClick={() => setPickerOpen((o) => !o)}
+                  >
+                    + Tag
+                  </button>
+                )}
+                {pickerOpen && (
+                  <div className="context-chips">
+                    {tags.map((t) => {
+                      const active = entry.context_tag_id === t.id;
+                      return (
+                        <button
+                          key={t.id}
+                          type="button"
+                          className={active ? 'chip active' : 'chip'}
+                          style={
+                            active
+                              ? { background: t.color, borderColor: t.color, color: textOn(t.color) }
+                              : { borderColor: t.color }
+                          }
+                          onClick={() => {
+                            onSetContext(entry.id, active ? null : t.id);
+                            setPickerOpen(false);
+                          }}
+                        >
+                          {t.name}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+            <div className="actions">
+              {entry.reviewed ? (
+                <span className="accepted">✓ Revisado</span>
+              ) : (
+                <button onClick={() => onAccept(entry.id)}>Aceitar</button>
+              )}
+              <button className="link" onClick={startEdit}>Corrigir</button>
+              <button className="link danger" onClick={() => onDelete(entry.id)}>Excluir</button>
+            </div>
+          </>
+        ) : (
+          <div className="edit">
+            {editFoods.length > 0 && (
+              <ul className="edit-foods">
+                {editFoods.map((f) => (
+                  <li key={f.key} className="edit-food">
+                    <input
+                      type="text"
+                      value={f.description}
+                      placeholder="Alimento"
+                      onChange={(e) => updateFood(f.key, 'description', e.target.value)}
+                      disabled={busy}
+                    />
+                    <input
+                      type="text"
+                      className="qty"
+                      value={f.quantity}
+                      placeholder="Qtd"
+                      onChange={(e) => updateFood(f.key, 'quantity', e.target.value)}
+                      disabled={busy}
+                    />
+                    <button
+                      type="button"
+                      className="link danger"
+                      onClick={() => removeFood(f.key)}
+                      disabled={busy}
+                      aria-label="Remover alimento"
+                    >
+                      🗑
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <textarea
+              className="note"
+              value={note}
+              placeholder="Correção em texto livre (ex.: é peixe, não frango; porção ~200g)"
+              onChange={(e) => setNote(e.target.value)}
+              disabled={busy}
+              rows={2}
+            />
+            {err && <div className="banner error">{err}</div>}
+            <div className="actions">
+              <button onClick={() => void submit()} disabled={busy}>
+                {busy ? 'Re-analisando…' : 'Re-analisar'}
+              </button>
+              <button className="link" onClick={cancelEdit} disabled={busy}>Cancelar</button>
+            </div>
+          </div>
+        )}
+      </div>
+    </li>
+  );
+}
+
+// CAP-8: thin wrapper that prepends a date label above each card in search results.
+// Renders as two sibling <li> elements inside the parent <ul className="cards">.
+function SearchEntryCard(props: Parameters<typeof EntryCard>[0]) {
+  const date = new Date(props.entry.created_at).toLocaleDateString('pt-BR', {
+    timeZone: 'America/Sao_Paulo',
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    weekday: 'short',
+  });
+  return (
+    <>
+      <li className="search-date-label">{date}</li>
+      <EntryCard {...props} />
+    </>
+  );
+}
+
+// CAP-6: weekly behavioral-pattern report. Loaded lazily once per mount of the
+// tab; a useRef guards against duplicate fetches when the component re-renders.
+// States:
+//   idle     — component just mounted (should not be visible long)
+//   loading  — fetch in flight
+//   insufficient — < 3 days of data in the last 7 days
+//   error    — network/AI failure; user can retry
+//   ok       — analysis ready (period + observations)
+type WeeklyReportStatus = 'idle' | 'loading' | 'insufficient' | 'error' | 'ok';
+type ReportPreset = 7 | 14 | 30 | 'custom';
+
+// Returns YYYY-MM-DD for `n` days before `base` (ISO date string).
+function addDays(base: string, n: number): string {
+  const d = new Date(`${base}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+
+// Compute start_date / end_date for a given preset.
+// preset=7 returns empty (server computes 7d rolling window, original CAP-6 behavior).
+function presetToDates(
+  preset: ReportPreset,
+  customStart: string,
+  customEnd: string,
+): Pick<ReportQueryParams, 'start_date' | 'end_date'> {
+  if (preset === 7) return {};
+  if (preset === 'custom') return { start_date: customStart, end_date: customEnd };
+  const today = todayLocal();
+  return { start_date: addDays(today, -(preset - 1)), end_date: today };
+}
+
+function WeeklyReportView({ onLogout }: { onLogout: () => void }) {
+  type ReportData = Extract<WeeklyReportPayload, { generated_at: string }>;
+  const [status, setStatus] = useState<WeeklyReportStatus>('idle');
+  const [data, setData] = useState<ReportData | null>(null);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [preset, setPreset] = useState<ReportPreset>(7);
+  const today = todayLocal();
+  const [customStart, setCustomStart] = useState<string>(addDays(today, -6));
+  const [customEnd, setCustomEnd] = useState<string>(today);
+
+  function doLoad(params: ReportQueryParams) {
+    setStatus('loading');
+    setData(null);
+    setErrorMsg(null);
+    fetchWeeklyReport(params)
+      .then((payload) => {
+        if ('insufficient' in payload && payload.insufficient) {
+          setStatus('insufficient');
+        } else {
+          setData(payload as ReportData);
+          setStatus('ok');
+        }
+      })
+      .catch((err) => {
+        if (err instanceof UnauthorizedError) { onLogout(); return; }
+        setErrorMsg((err as Error).message);
+        setStatus('error');
+      });
+  }
+
+  // Re-fetch whenever preset changes (skip 'custom' — wait for user to click Aplicar).
+  useEffect(() => {
+    if (preset !== 'custom') {
+      doLoad(presetToDates(preset, customStart, customEnd));
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [preset]);
+
+  function handleAplicar() {
+    if (!customStart || !customEnd) return;
+    doLoad({ start_date: customStart, end_date: customEnd });
+  }
+
+  function handleRegenerar() {
+    if (preset === 'custom' && (!customStart || !customEnd)) return;
+    const dates = presetToDates(preset, customStart, customEnd);
+    doLoad({ ...dates, force: true });
+  }
+
+  const reportData = status === 'ok' ? data : null;
+  const busy = status === 'loading';
+
+  function fmtDate(d: string): string {
+    const [, m, day] = d.split('-');
+    return `${day}/${m}`;
+  }
+
+  function fmtTime(iso: string): string {
+    return new Date(iso).toLocaleTimeString('pt-BR', {
+      timeZone: 'America/Sao_Paulo',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  }
+
+  return (
+    <div className="review">
+      <header>
+        <div className="header-row">
+          <h1>Relatório de padrões</h1>
+          <button className="link" onClick={onLogout}>Sair</button>
+        </div>
+      </header>
+
+      <div className="seg" style={{ margin: '12px 16px 0' }}>
+        {([7, 14, 30] as const).map((d) => (
+          <button
+            key={d}
+            type="button"
+            className={`seg-btn${preset === d ? ' active' : ''}`}
+            onClick={() => setPreset(d)}
+            disabled={busy}
+          >
+            {d}d
+          </button>
+        ))}
+        <button
+          type="button"
+          className={`seg-btn${preset === 'custom' ? ' active' : ''}`}
+          onClick={() => setPreset('custom')}
+          disabled={busy}
+        >
+          Personalizado
+        </button>
+      </div>
+
+      {preset === 'custom' && (
+        <div className="report-custom-dates">
+          <input
+            type="date"
+            value={customStart}
+            max={customEnd || today}
+            onChange={(e) => setCustomStart(e.target.value)}
+          />
+          <span>–</span>
+          <input
+            type="date"
+            value={customEnd}
+            min={customStart}
+            max={today}
+            onChange={(e) => setCustomEnd(e.target.value)}
+          />
+          <button
+            type="button"
+            className="seg-btn"
+            onClick={handleAplicar}
+            disabled={!customStart || !customEnd || busy}
+          >
+            Aplicar
+          </button>
+        </div>
+      )}
+
+      {busy && (
+        <div className="banner">Analisando padrões com IA…</div>
+      )}
+
+      {status === 'insufficient' && (
+        <div className="empty">
+          <p>Dados insuficientes (mínimo 3 dias de registro no período selecionado).</p>
+          <button type="button" className="seg-btn" onClick={handleRegenerar}>
+            Regenerar
+          </button>
+        </div>
+      )}
+
+      {status === 'error' && (
+        <div className="empty">
+          <p>{errorMsg ?? 'Não foi possível gerar o relatório.'}</p>
+          <button
+            type="button"
+            className="seg-btn"
+            onClick={() => doLoad(presetToDates(preset, customStart, customEnd))}
+          >
+            Tentar novamente
+          </button>
+        </div>
+      )}
+
+      {status === 'ok' && reportData && (
+        <div className="patterns">
+          <div className="weekly-report-header">
+            <span className="weekly-report-period">
+              {fmtDate(reportData.period_start)} – {fmtDate(reportData.period_end)}
+            </span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+              <span className="patterns-meta">gerado às {fmtTime(reportData.generated_at)}</span>
+              <button type="button" className="seg-btn" onClick={handleRegenerar}>
+                Regenerar
+              </button>
+            </div>
+          </div>
+          {reportData.analysis.summary && (
+            <p className="patterns-summary">{reportData.analysis.summary}</p>
+          )}
+          <ul className="pattern-list">
+            {reportData.analysis.observations.map((o, i) => (
+              <li className="pattern-card" key={i}>
+                <span className="pattern-cat">{o.category}</span>
+                <strong className="pattern-title">{o.title}</strong>
+                <p className="pattern-detail">{o.detail}</p>
+              </li>
+            ))}
+          </ul>
+          <p className="patterns-meta">Análise gerada por IA a partir dos seus registros.</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function FoodRow({ food }: { food: FoodItem }) {
+  const macros = [
+    food.kcal != null ? `${Math.round(food.kcal)} kcal` : null,
+    food.protein_g != null ? `P ${Math.round(food.protein_g)}g` : null,
+    food.fat_g != null ? `G ${Math.round(food.fat_g)}g` : null,
+    food.carbs_g != null ? `C ${Math.round(food.carbs_g)}g` : null,
+  ].filter(Boolean);
+  return (
+    <li className="food">
+      <span className={`dot ${confClass(food.confidence)}`} title={pct(food.confidence)} />
+      <span className="food-desc">
+        {food.description}
+        {food.quantity ? ` · ${food.quantity}` : ''}
+      </span>
+      {macros.length > 0 && <span className="macros">{macros.join(' · ')}</span>}
+    </li>
+  );
+}
+
+// CAP-9 — tag management: create, rename, delete the user's context tags.
+function TagsManager({ onLogout }: { onLogout: () => void }) {
+  const [tags, setTags] = useState<ContextTag[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [newName, setNewName] = useState('');
+  const [newColor, setNewColor] = useState('#9ca3af');
+  const [busy, setBusy] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editName, setEditName] = useState('');
+
+  const byName = (a: ContextTag, b: ContextTag) => a.name.localeCompare(b.name);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      setTags(await fetchTags());
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        onLogout();
+        return;
+      }
+      setError((err as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }, [onLogout]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const handleCreate = async () => {
+    const name = newName.trim();
+    if (!name) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const tag = await createTag(name, newColor);
+      setTags((prev) => [...prev, tag].sort(byName));
+      setNewName('');
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        onLogout();
+        return;
+      }
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const startEdit = (t: ContextTag) => {
+    setEditingId(t.id);
+    setEditName(t.name);
+    setError(null);
+  };
+  const cancelEdit = () => {
+    setEditingId(null);
+    setEditName('');
+  };
+
+  const handleRename = async (id: string) => {
+    const name = editName.trim();
+    if (!name) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const tag = await updateTag(id, { name });
+      setTags((prev) => prev.map((t) => (t.id === id ? tag : t)).sort(byName));
+      cancelEdit();
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        onLogout();
+        return;
+      }
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Persist a color change for an existing tag. Kept off the `busy` flag so the
+  // native picker stays responsive; updates the row in place on success.
+  const handleColor = async (id: string, color: string) => {
+    setError(null);
+    try {
+      const tag = await updateTag(id, { color });
+      setTags((prev) => prev.map((t) => (t.id === id ? tag : t)));
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        onLogout();
+        return;
+      }
+      setError((err as Error).message);
+    }
+  };
+
+  const handleDelete = async (t: ContextTag) => {
+    if (!window.confirm(`Apagar a tag "${t.name}"? Entradas que a usam ficam sem contexto.`)) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await deleteTag(t.id);
+      setTags((prev) => prev.filter((x) => x.id !== t.id));
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        onLogout();
+        return;
+      }
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="review">
+      <header>
+        <div className="header-row">
+          <h1>Tags de contexto</h1>
+          <button className="link" onClick={onLogout}>Sair</button>
+        </div>
+        <form
+          className="controls"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void handleCreate();
+          }}
+        >
+          <input
+            type="text"
+            placeholder="Nova tag (ex.: padaria)"
+            value={newName}
+            maxLength={30}
+            onChange={(e) => setNewName(e.target.value)}
+            disabled={busy}
+          />
+          <input
+            type="color"
+            className="color-swatch"
+            value={newColor}
+            onChange={(e) => setNewColor(e.target.value)}
+            disabled={busy}
+            title="Cor da tag"
+          />
+          <button type="submit" disabled={busy || !newName.trim()}>Adicionar</button>
+        </form>
+      </header>
+
+      {error && <div className="banner error">{error}</div>}
+      {loading && <div className="banner">Carregando…</div>}
+      {!loading && !error && tags.length === 0 && <div className="empty">Nenhuma tag.</div>}
+
+      <ul className="tag-list">
+        {tags.map((t) => (
+          <li key={t.id} className="tag-row">
+            {editingId === t.id ? (
+              <>
+                <input
+                  type="text"
+                  value={editName}
+                  maxLength={30}
+                  onChange={(e) => setEditName(e.target.value)}
+                  disabled={busy}
+                  autoFocus
+                />
+                <button onClick={() => void handleRename(t.id)} disabled={busy || !editName.trim()}>
+                  Salvar
+                </button>
+                <button className="link" onClick={cancelEdit} disabled={busy}>Cancelar</button>
+              </>
+            ) : (
+              <>
+                <input
+                  type="color"
+                  className="color-swatch"
+                  defaultValue={t.color}
+                  // Persist on blur, not onChange: React's onChange for <input type=color>
+                  // fires on every drag tick, which would spray PATCH requests. The guard
+                  // skips a no-op save when the value did not actually change.
+                  onBlur={(e) => {
+                    if (e.target.value !== t.color) void handleColor(t.id, e.target.value);
+                  }}
+                  disabled={busy}
+                  title="Cor da tag"
+                />
+                <span className="tag-name">{t.name}</span>
+                <button className="link" onClick={() => startEdit(t)} disabled={busy}>Renomear</button>
+                <button className="link danger" onClick={() => void handleDelete(t)} disabled={busy}>
+                  Apagar
+                </button>
+              </>
+            )}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+// CAP-7a — share links: generate a read-only link for the nutritionist over a
+// chosen period with an expiration, then copy/revoke existing links.
+type Validity = '7' | '30' | '90' | 'custom';
+
+function shareUrl(token: number): string {
+  // Friendly zero-padded display (e.g. /share/001); the backend lookup parses the int.
+  return `${window.location.origin}/share/${String(token).padStart(3, '0')}`;
+}
+
+function fmtDate(d: string): string {
+  // d is 'YYYY-MM-DD'; render without constructing a Date (avoids tz off-by-one).
+  const [y, m, day] = d.split('-');
+  return `${day}/${m}/${y}`;
+}
+
+function ShareManager({ onLogout }: { onLogout: () => void }) {
+  const [links, setLinks] = useState<ShareLink[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState<string | null>(null);
+
+  const [start, setStart] = useState<string>(todayLocal());
+  const [end, setEnd] = useState<string>(todayLocal());
+  const [validity, setValidity] = useState<Validity>('30');
+  const [customExpires, setCustomExpires] = useState<string>('');
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      setLinks(await listShareLinks());
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        onLogout();
+        return;
+      }
+      setError((err as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }, [onLogout]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const handleGenerate = async () => {
+    if (start > end) {
+      setError('A data inicial deve ser anterior ou igual à final.');
+      return;
+    }
+    // Compute the absolute expiration: presets are N days from now; custom is a local
+    // datetime the user picked. Both go to the backend as ISO.
+    let expires_at: string;
+    if (validity === 'custom') {
+      if (!customExpires) {
+        setError('Escolha a data/hora de expiração.');
+        return;
+      }
+      const d = new Date(customExpires);
+      if (Number.isNaN(d.getTime()) || d.getTime() <= Date.now()) {
+        setError('A expiração deve ser no futuro.');
+        return;
+      }
+      expires_at = d.toISOString();
+    } else {
+      const d = new Date();
+      d.setDate(d.getDate() + Number(validity));
+      expires_at = d.toISOString();
+    }
+
+    setBusy(true);
+    setError(null);
+    try {
+      await createShareLink({ period_start: start, period_end: end, expires_at });
+      await load();
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        onLogout();
+        return;
+      }
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleCopy = async (token: number) => {
+    const url = shareUrl(token);
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(url);
+      setTimeout(() => setCopied((c) => (c === url ? null : c)), 2000);
+    } catch {
+      // Clipboard blocked (insecure context / permissions): show the URL to copy by hand.
+      window.prompt('Copie o link:', url);
+    }
+  };
+
+  const handleRevoke = async (link: ShareLink) => {
+    if (!window.confirm('Revogar este link? Quem tiver a URL perde o acesso.')) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await deleteShareLink(link.id);
+      setLinks((prev) => prev.filter((l) => l.id !== link.id));
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        onLogout();
+        return;
+      }
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="review">
+      <header>
+        <div className="header-row">
+          <h1>Compartilhar com o nutricionista</h1>
+          <button className="link" onClick={onLogout}>Sair</button>
+        </div>
+        <div className="share-form">
+          <label>
+            De
+            <input type="date" value={start} onChange={(e) => e.target.value && setStart(e.target.value)} disabled={busy} />
+          </label>
+          <label>
+            Até
+            <input type="date" value={end} onChange={(e) => e.target.value && setEnd(e.target.value)} disabled={busy} />
+          </label>
+          <label>
+            Validade
+            <select value={validity} onChange={(e) => setValidity(e.target.value as Validity)} disabled={busy}>
+              <option value="7">7 dias</option>
+              <option value="30">30 dias</option>
+              <option value="90">90 dias</option>
+              <option value="custom">Personalizada…</option>
+            </select>
+          </label>
+          {validity === 'custom' && (
+            <input
+              type="datetime-local"
+              value={customExpires}
+              onChange={(e) => setCustomExpires(e.target.value)}
+              disabled={busy}
+            />
+          )}
+          <button type="button" onClick={() => void handleGenerate()} disabled={busy}>
+            {busy ? 'Gerando…' : 'Gerar link'}
+          </button>
+        </div>
+      </header>
+
+      {error && <div className="banner error">{error}</div>}
+      {loading && <div className="banner">Carregando…</div>}
+      {!loading && !error && links.length === 0 && <div className="empty">Nenhum link gerado.</div>}
+
+      <ul className="link-list">
+        {links.map((l) => (
+          <li key={l.id} className={`link-row ${l.status === 'expired' ? 'expired' : ''}`}>
+            <div className="link-main">
+              <code className="link-url">{shareUrl(l.token)}</code>
+              <span className="link-meta">
+                {fmtDate(l.period_start)}–{fmtDate(l.period_end)} · {l.status === 'expired' ? 'expirado' : 'ativo'} ·
+                expira {new Date(l.expires_at).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
+              </span>
+            </div>
+            <div className="link-actions">
+              <button className="link" onClick={() => void handleCopy(l.token)} disabled={busy}>
+                {copied === shareUrl(l.token) ? 'Copiado!' : 'Copiar'}
+              </button>
+              <button className="link danger" onClick={() => void handleRevoke(l)} disabled={busy}>Revogar</button>
+            </div>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+// Color class for an HTTP status code (or null when no response was sent).
+function statusClass(code: number | null): string {
+  if (code === null) return 'st-none';
+  if (code >= 500) return 'st-5xx';
+  if (code >= 400) return 'st-4xx';
+  if (code >= 200 && code < 300) return 'st-2xx';
+  return 'st-other';
+}
+
+type DirectionFilter = '' | 'inbound' | 'outbound';
+
+function Audit({ onLogout }: { onLogout: () => void }) {
+  const [logs, setLogs] = useState<RequestLog[]>([]);
+  const [q, setQ] = useState('');
+  const [direction, setDirection] = useState<DirectionFilter>('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<string | null>(null);
+
+  // `search`/`dir` are passed explicitly so this callback only depends on
+  // onLogout (stable) — the mount effect runs once and filtering is manual.
+  const load = useCallback(
+    async (search: string, dir: DirectionFilter) => {
+      setLoading(true);
+      setError(null);
+      try {
+        setLogs(await fetchRequestLogs(search, dir || undefined));
+      } catch (err) {
+        if (err instanceof UnauthorizedError) {
+          onLogout();
+          return;
+        }
+        setError((err as Error).message);
+      } finally {
+        setLoading(false);
+      }
+    },
+    [onLogout]
+  );
+
+  useEffect(() => {
+    void load('', '');
+  }, [load]);
+
+  // Switching the direction filter reloads immediately with the current query.
+  const selectDirection = useCallback(
+    (dir: DirectionFilter) => {
+      setDirection(dir);
+      void load(q, dir);
+    },
+    [load, q]
+  );
+
+  const handlePurge = useCallback(async () => {
+    if (!window.confirm('Apagar TODOS os registros de auditoria?')) return;
+    try {
+      await purgeRequestLogs();
+      setLogs([]);
+      setExpanded(null);
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        onLogout();
+        return;
+      }
+      setError((err as Error).message);
+    }
+  }, [onLogout]);
+
+  return (
+    <div className="review">
+      <header>
+        <div className="header-row">
+          <h1>Auditoria</h1>
+          <button className="link" onClick={onLogout}>Sair</button>
+        </div>
+        <div className="seg">
+          {([
+            ['', 'Todos'],
+            ['inbound', 'Entrada'],
+            ['outbound', 'Saída'],
+          ] as [DirectionFilter, string][]).map(([value, label]) => (
+            <button
+              key={value || 'all'}
+              type="button"
+              className={direction === value ? 'seg-btn active' : 'seg-btn'}
+              onClick={() => selectDirection(value)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <form
+          className="controls"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void load(q, direction);
+          }}
+        >
+          <input
+            type="search"
+            placeholder="Filtrar por path/serviço (ex.: /webhook, z-api)"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+          />
+          <button type="submit">Buscar</button>
+          <button type="button" className="link" onClick={() => void load(q, direction)}>Atualizar</button>
+          <button type="button" className="link danger" onClick={() => void handlePurge()}>Limpar</button>
+        </form>
+      </header>
+
+      {error && <div className="banner error">{error}</div>}
+      {loading && <div className="banner">Carregando…</div>}
+      {!loading && !error && logs.length === 0 && (
+        <div className="empty">Nenhuma requisição registrada.</div>
+      )}
+
+      <ul className="logs">
+        {logs.map((log) => (
+          <LogRow
+            key={log.id}
+            log={log}
+            open={expanded === log.id}
+            onToggle={() => setExpanded((cur) => (cur === log.id ? null : log.id))}
+          />
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function LogRow({
+  log,
+  open,
+  onToggle,
+}: {
+  log: RequestLog;
+  open: boolean;
+  onToggle: () => void;
+}) {
+  const when = new Date(log.created_at).toLocaleString('pt-BR', {
+    day: '2-digit',
+    month: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+  const isOutbound = log.direction === 'outbound';
+  return (
+    <li className="log">
+      <button className="log-head" onClick={onToggle}>
+        <span className={`status ${statusClass(log.status_code)}`}>{log.status_code ?? '—'}</span>
+        <span className={`dir dir-${isOutbound ? 'out' : 'in'}`}>{isOutbound ? '↑' : '↓'}</span>
+        <span className="method">{log.method}</span>
+        <span className="log-path">{log.path}</span>
+        <span className="log-meta">
+          {log.duration_ms != null ? `${log.duration_ms}ms` : ''} · {when}
+        </span>
+      </button>
+      {open && (
+        <div className="log-detail">
+          {isOutbound ? (
+            <>
+              <Field label="Resumo" value={log.request_body ?? '(vazio)'} />
+              <Field label="Resultado" value={log.response_body ?? '(vazio)'} />
+            </>
+          ) : (
+            <>
+              {log.query && <Field label="Query" value={log.query} />}
+              {log.remote_ip && <Field label="IP" value={log.remote_ip} />}
+              <Field label="Headers" value={JSON.stringify(log.request_headers ?? {}, null, 2)} />
+              <Field label="Request body" value={log.request_body ?? '(vazio)'} />
+              <Field label="Response body" value={log.response_body ?? '(vazio)'} />
+            </>
+          )}
+        </div>
+      )}
+    </li>
+  );
+}
+
+function Field({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="field">
+      <span className="field-label">{label}</span>
+      <pre className="field-value">{value}</pre>
+    </div>
+  );
+}
