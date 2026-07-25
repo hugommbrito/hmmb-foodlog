@@ -248,11 +248,13 @@ export async function analyzePatterns(entries: PatternEntryInput[]): Promise<Pat
   const response = await withOutboundAudit(
     'anthropic',
     'analyze-patterns',
-    { model: 'claude-sonnet-4-6', entries: entries.length },
+    { model: 'claude-opus-5', entries: entries.length },
     () =>
       anthropic.messages.create({
-        model: 'claude-sonnet-4-6',
-        max_tokens: 1536,
+        model: 'claude-opus-5',
+        // Opus 5 thinks by default (adaptive, no param needed), and max_tokens is a
+        // shared cap over thinking + response text — sized up to leave room for both.
+        max_tokens: 16000,
         system: PATTERNS_SYSTEM_PROMPT,
         messages: [
           {
@@ -267,6 +269,12 @@ export async function analyzePatterns(entries: PatternEntryInput[]): Promise<Pat
     .filter((b): b is Anthropic.TextBlock => b.type === 'text')
     .map((b) => b.text)
     .join('');
+
+  // Distinguish "hit the token ceiling mid-JSON" from a genuinely malformed
+  // response — the former is a budget problem, not a parsing bug.
+  if (response.stop_reason === 'max_tokens') {
+    throw new Error(`[ai] Patterns response truncated at max_tokens (${rawText.length} chars received)`);
+  }
 
   const jsonText = extractJsonObject(rawText);
   if (!jsonText) {
