@@ -2,7 +2,7 @@ import { FastifyInstance } from 'fastify';
 import { v4 as uuidv4 } from 'uuid';
 import { config } from '../config';
 import { query } from '../db/client';
-import { enqueueAnalysis, waitForAnalysis } from '../queues/entry';
+import { runAnalysis, waitForAnalysis } from '../services/analysis-runner';
 import { uploadPhoto } from '../services/storage';
 import {
   extractPhotoFromWebhook,
@@ -52,8 +52,7 @@ async function finalizeCorrection(
   correction: string
 ): Promise<void> {
   try {
-    const job = await enqueueAnalysis(entryId, correction);
-    await waitForAnalysis(job, config.ANALYSIS_WAIT_TIMEOUT_MS);
+    await waitForAnalysis(entryId, config.ANALYSIS_WAIT_TIMEOUT_MS, correction);
   } catch (err) {
     console.warn(`[webhook] Re-analysis not ready for entry ${entryId}: ${(err as Error).message}`);
   }
@@ -148,8 +147,8 @@ export async function webhookRoutes(app: FastifyInstance): Promise<void> {
       return reply.status(200).send({ received: false });
     }
 
-    enqueueAnalysis(entryId).catch((err) =>
-      console.error(`[webhook] Failed to enqueue analysis for entry ${entryId}:`, (err as Error).message)
+    runAnalysis(entryId).catch((err) =>
+      console.error(`[webhook] Analysis failed for entry ${entryId}:`, (err as Error).message)
     );
 
     await sendTextMessage(phone, '📸 Foto recebida!');

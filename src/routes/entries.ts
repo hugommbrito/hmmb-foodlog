@@ -2,7 +2,7 @@ import { FastifyInstance, FastifyRequest } from 'fastify';
 import { v4 as uuidv4 } from 'uuid';
 import { config } from '../config';
 import { query } from '../db/client';
-import { enqueueAnalysis, waitForAnalysis } from '../queues/entry';
+import { waitForAnalysis } from '../services/analysis-runner';
 import { uploadPhoto, compressForAi } from '../services/storage';
 import { User, Entry, FoodItem, EntryWithFoods, EntryAnalysisView, PhotoCaptureResponse, ReanalyzeRequest } from '../types/models';
 
@@ -397,8 +397,7 @@ export async function entriesRoutes(app: FastifyInstance): Promise<void> {
     // carry the AI result — but a timeout/failure must NOT fail the capture: we fall
     // back to analysis_status:'pending' and let the client fetch it later via GET.
     try {
-      const job = await enqueueAnalysis(entryId);
-      await waitForAnalysis(job, config.ANALYSIS_WAIT_TIMEOUT_MS);
+      await waitForAnalysis(entryId, config.ANALYSIS_WAIT_TIMEOUT_MS);
     } catch (err) {
       request.log.warn(
         `[entries] Analysis not ready for entry ${entryId}: ${(err as Error).message}`
@@ -539,8 +538,7 @@ export async function entriesRoutes(app: FastifyInstance): Promise<void> {
     // Synchronous analysis like the photo capture: wait for the result, but a
     // timeout/failure must NOT fail the capture — fall back to analysis_status:'pending'.
     try {
-      const job = await enqueueAnalysis(entryId, undefined, description);
-      await waitForAnalysis(job, config.ANALYSIS_WAIT_TIMEOUT_MS);
+      await waitForAnalysis(entryId, config.ANALYSIS_WAIT_TIMEOUT_MS, undefined, description);
     } catch (err) {
       request.log.warn(
         `[entries] Analysis not ready for entry ${entryId}: ${(err as Error).message}`
@@ -610,8 +608,7 @@ export async function entriesRoutes(app: FastifyInstance): Promise<void> {
       }
 
       try {
-        const job = await enqueueAnalysis(id, correction ?? undefined);
-        await waitForAnalysis(job, config.ANALYSIS_WAIT_TIMEOUT_MS);
+        await waitForAnalysis(id, config.ANALYSIS_WAIT_TIMEOUT_MS, correction ?? undefined);
       } catch (err) {
         request.log.warn(
           `[entries] Re-analysis not ready for entry ${id}: ${(err as Error).message}`
