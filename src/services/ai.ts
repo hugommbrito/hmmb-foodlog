@@ -250,19 +250,24 @@ export async function analyzePatterns(entries: PatternEntryInput[]): Promise<Pat
     'analyze-patterns',
     { model: 'claude-opus-5', entries: entries.length },
     () =>
-      anthropic.messages.create({
-        model: 'claude-opus-5',
-        // Opus 5 thinks by default (adaptive, no param needed), and max_tokens is a
-        // shared cap over thinking + response text — sized up to leave room for both.
-        max_tokens: 16000,
-        system: PATTERNS_SYSTEM_PROMPT,
-        messages: [
-          {
-            role: 'user',
-            content: `Food log for the period (one line per meal):\n${digest}\n\nReturn the JSON.`,
-          },
-        ],
-      })
+      anthropic.messages.create(
+        {
+          model: 'claude-opus-5',
+          // Opus 5 thinks by default (adaptive, no param needed), and max_tokens is a
+          // shared cap over thinking + response text — sized up to leave room for both.
+          max_tokens: 16000,
+          system: PATTERNS_SYSTEM_PROMPT,
+          messages: [
+            {
+              role: 'user',
+              content: `Food log for the period (one line per meal):\n${digest}\n\nReturn the JSON.`,
+            },
+          ],
+        },
+        // Overrides the client's 60s default: Opus 5's default thinking effort over a
+        // full month of entries can run well past that before the first token streams.
+        { timeout: 300_000 }
+      )
   );
 
   const rawText = response.content
