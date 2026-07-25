@@ -1,19 +1,18 @@
-import { Worker, Job } from 'bullmq';
-import IORedis from 'ioredis';
-import { config } from '../config';
 import pool, { query } from '../db/client';
-import { analyzeEntry } from '../services/ai';
-import { Entry, AnalyzeEntryJobData } from '../types/models';
+import { analyzeEntry } from './ai';
+import { Entry } from '../types/models';
 
-let worker: Worker<AnalyzeEntryJobData> | null = null;
-let workerConnection: IORedis | null = null;
+const MAX_ATTEMPTS = 3;
+const BACKOFF_BASE_MS = 1000;
 
-async function processJob(job: Job<AnalyzeEntryJobData>): Promise<void> {
-  const { entryId, correction, description } = job.data;
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
+async function analyzeOnce(entryId: string, correction?: string, description?: string): Promise<void> {
   const entries = await query<Entry>('SELECT * FROM entries WHERE id = $1', [entryId]);
   if (entries.length === 0) {
-    console.warn(`[worker] Entry ${entryId} not found, discarding job`);
+    console.warn(`[analysis] Entry ${entryId} not found, discarding`);
     return;
   }
   const entry = entries[0];
@@ -21,7 +20,7 @@ async function processJob(job: Job<AnalyzeEntryJobData>): Promise<void> {
   // The ai_cycles guard protects the initial-capture path from a duplicate run.
   // A CAP-4 re-analysis always carries a correction, so it is allowed to re-run.
   if (entry.ai_cycles > 0 && !correction) {
-    console.warn(`[worker] Entry ${entryId} already analyzed (ai_cycles=${entry.ai_cycles}), skipping`);
+    console.warn(`[analysis] Entry ${entryId} already analyzed (ai_cycles=${entry.ai_cycles}), skipping`);
     return;
   }
 
@@ -31,7 +30,7 @@ async function processJob(job: Job<AnalyzeEntryJobData>): Promise<void> {
   // edits or a CAP-5 WhatsApp reply) carries `correction` but no `description`,
   // and must NOT be silently skipped here.
   if (entry.photos.length === 0 && !description && !correction) {
-    console.warn(`[worker] Entry ${entryId} has no photos, description, or correction, skipping`);
+    console.warn(`[analysis] Entry ${entryId} has no photos, description, or correction, skipping`);
     return;
   }
 
@@ -60,7 +59,7 @@ async function processJob(job: Job<AnalyzeEntryJobData>): Promise<void> {
     if (match) {
       contextTagId = match.id;
     } else {
-      console.warn(`[worker] Entry ${entryId}: AI suggested context "${result.context}" with no matching tag`);
+      console.warn(`[analysis] Entry ${entryId}: AI suggested context "${result.context}" with no matching tag`);
     }
   }
 
@@ -77,7 +76,7 @@ async function processJob(job: Job<AnalyzeEntryJobData>): Promise<void> {
       [entryId]
     );
     if (Number(existingRows[0]?.count ?? 0) > 0) {
-      console.warn(`[worker] Re-analysis of ${entryId} returned no foods; keeping previous analysis`);
+      console.warn(`[analysis] Re-analysis of ${entryId} returned no foods; keeping previous analysis`);
       return;
     }
   }
@@ -112,31 +111,38 @@ async function processJob(job: Job<AnalyzeEntryJobData>): Promise<void> {
   }
 }
 
-export function startWorker(): void {
-  if (worker) return;
-
-  workerConnection = new IORedis(config.REDIS_URL, { maxRetriesPerRequest: null });
-  workerConnection.on('error', (err) => console.error('[worker] Redis error:', (err as Error).message));
-
-  worker = new Worker<AnalyzeEntryJobData>('analyze-entry', processJob, { connection: workerConnection });
-
-  worker.on('failed', (job, err) => {
-    console.error(
-      `[worker] Job ${job?.id} (entry: ${job?.data?.entryId}) failed:`,
-      (err as Error).message
-    );
-  });
-
-  console.log('[worker] analyze-entry worker started');
+// Retries like the old BullMQ job options (`attempts: 3, backoff: { type: 'exponential', delay: 1000 }`).
+export async function runAnalysis(entryId: string, correction?: string, description?: string): Promise<void> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await analyzeOnce(entryId, correction, description);
+      return;
+    } catch (err) {
+      if (attempt >= MAX_ATTEMPTS) {
+        throw err;
+      }
+      console.error(`[analysis] Entry ${entryId} attempt ${attempt} failed, retrying:`, (err as Error).message);
+      await sleep(BACKOFF_BASE_MS * 2 ** (attempt - 1));
+    }
+  }
 }
 
-export async function closeWorker(): Promise<void> {
-  if (worker) {
-    await worker.close();
-    worker = null;
-  }
-  if (workerConnection) {
-    await workerConnection.quit();
-    workerConnection = null;
-  }
+// Runs the analysis and races it against timeoutMs. If the timeout wins, this
+// rejects but the analysis keeps running (it's a plain in-process promise, not
+// tied to the caller) — its retries and DB writes complete independently, so a
+// later GET picks up the result. Callers must treat a rejection as "not ready
+// yet", never as a capture failure (mirrors the old queue's wait-with-timeout
+// contract, without needing a persistent worker/Redis connection).
+export function waitForAnalysis(
+  entryId: string,
+  timeoutMs: number,
+  correction?: string,
+  description?: string
+): Promise<void> {
+  const analysis = runAnalysis(entryId, correction, description);
+  analysis.catch(() => {}); // avoid an unhandled rejection if the timeout below wins the race
+  return Promise.race([
+    analysis,
+    new Promise<void>((_, reject) => setTimeout(() => reject(new Error('Analysis timed out')), timeoutMs)),
+  ]);
 }

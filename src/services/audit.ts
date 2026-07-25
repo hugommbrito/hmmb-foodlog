@@ -15,7 +15,6 @@ const SECRETS: string[] = [
   config.R2_ACCESS_KEY,
   config.R2_SECRET_KEY,
   config.DATABASE_URL,
-  config.REDIS_URL,
   config.ZAPI_WEBHOOK_SECRET ?? '',
 ].filter((s) => s.length > 0);
 

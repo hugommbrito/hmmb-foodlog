@@ -23,13 +23,7 @@ Entradas de captura:
        ├──► PostgreSQL       (usuários, entradas, itens alimentares)
        ├──► Cloudflare R2    (fotos em formato permanente)
        ├──► Z-API            (confirmação de recebimento ao usuário)
-       └──► Redis (BullMQ)   (fila de análise assíncrona)
-                │
-                ▼
-          [WORKER — analyze-entry]
-                │
-                └──► Claude Sonnet  (visão: identificação de alimentos e macros)
-                └──► PostgreSQL     (persistência dos food_items e scores)
+       └──► Claude Sonnet    (visão: identificação de alimentos e macros, in-process)
 
        [futuro]
        └──► Web app  (revisão de entradas, relatórios, link para nutricionista)
@@ -46,7 +40,7 @@ Entradas de captura:
 | Upload de fotos para Cloudflare R2 | ✅ Implementado |
 | Persistência no PostgreSQL | ✅ Implementado |
 | Confirmação de recebimento via WhatsApp | ✅ Implementado |
-| Pipeline de análise por IA (BullMQ + Claude vision) | ✅ Implementado |
+| Pipeline de análise por IA (Claude vision, in-process) | ✅ Implementado |
 | Endpoint REST de captura (`POST /entries/photo`, p/ iPhone Shortcut) | ✅ Implementado |
 | Autenticação por token Bearer (por-usuário) para o endpoint REST | ✅ Implementado |
 | Web app de revisão de entradas | 🔜 Pendente |
@@ -71,24 +65,24 @@ O backend recebe fotos enviadas pelo usuário no WhatsApp e as persiste automati
 4. A foto é baixada da URL fornecida pela Z-API (timeout de 8 s, limite de 20 MB)
 5. A foto é enviada para o bucket Cloudflare R2
 6. Uma entrada (`entry`) é criada no PostgreSQL com o URL público da foto
-7. Um job de análise é enfileirado no Redis (fire-and-forget — não bloqueia a resposta)
+7. A análise é disparada em background, sem bloquear a resposta ao Z-API
 8. O usuário recebe `📸 Foto recebida!` de confirmação no WhatsApp
 
 Mensagens enviadas pelo próprio bot (`fromMe: true`) e números não cadastrados são silenciosamente ignoradas. O webhook sempre responde HTTP 200 para evitar reenvios automáticos pelo Z-API.
 
-### Pipeline de análise por IA (assíncrona)
+### Pipeline de análise por IA
 
-Após a captura, um worker processa cada entrada em background via fila BullMQ + Redis.
+A análise roda in-process (função assíncrona chamada diretamente, sem fila/worker externo — ver `services/analysis-runner.ts`).
 
-**Fluxo do worker:**
-1. Recebe o `entryId` da fila `analyze-entry`
-2. Busca a entrada no banco (ignora se `ai_cycles > 0` — evita duplicações)
+**Fluxo da análise:**
+1. Recebe o `entryId` (e, opcionalmente, `correction`/`description`)
+2. Busca a entrada no banco (ignora se `ai_cycles > 0` sem correção — evita duplicações)
 3. Carrega os **20 alimentos distintos mais frequentes** do usuário como contexto de calibração
 4. Busca as fotos do R2 e as converte para base64
 5. Envia para **Claude Sonnet** (`claude-sonnet-4-6`) com visão — retorna JSON estruturado
 6. Em transação: atualiza `entries` (título, confidence, ai_cycles) e insere os `food_items`
 
-O job tem **3 tentativas** com backoff exponencial (1 s, 2 s, 4 s) em caso de falha.
+A análise tem **3 tentativas** com backoff exponencial (1 s, 2 s, 4 s) em caso de falha.
 
 ### Captura de fotos via endpoint REST (`POST /entries/photo`)
 
@@ -99,7 +93,7 @@ Caminho de captura alternativo ao WhatsApp, pensado para o **iPhone Shortcut** (
 2. O header `Authorization: Bearer <token>` é validado contra a coluna `users.api_token` (resolve o usuário)
 3. Cada foto é validada (mimetype `image/*`, ≤20 MB, não-vazia) e enviada ao Cloudflare R2
 4. **Uma única** `entry` é criada com o array de todas as fotos (ângulos diferentes da mesma refeição)
-5. Um job de análise é enfileirado e o endpoint **aguarda** o worker concluir (até `ANALYSIS_WAIT_TIMEOUT_MS`, padrão 50 s)
+5. A análise é disparada e o endpoint **aguarda** ela concluir (até `ANALYSIS_WAIT_TIMEOUT_MS`, padrão 50 s)
 6. Resposta `201 { entry_id, analysis_status, title, ai_confidence_overall, foods }` — com a análise já preenchida (textos em pt-BR). Se o tempo esgotar, retorna `analysis_status: "pending"` sem falhar a captura
 7. `GET /entries/:id` (mesmo token Bearer, restrito ao dono) devolve a entry + `food_items` para consulta posterior do resultado
 
@@ -134,7 +128,7 @@ Fotos são armazenadas com a chave `photos/{user_id}/{timestamp}-{uuid}` e acess
 Três tabelas principais:
 
 - **`users`** — número de telefone como identificador único
-- **`entries`** — cada foto enviada gera uma entrada; campos de IA (`title`, `ai_confidence_overall`, `ai_cycles`) são preenchidos pelo worker
+- **`entries`** — cada foto enviada gera uma entrada; campos de IA (`title`, `ai_confidence_overall`, `ai_cycles`) são preenchidos pela análise
 - **`food_items`** — itens identificados pela IA, com campos nutricionais por item (kcal, proteína, gordura, carboidratos, confidence)
 
 ### Health check
@@ -149,7 +143,6 @@ Três tabelas principais:
 
 - Node.js 20+
 - PostgreSQL (local ou Railway)
-- Redis (local ou Railway)
 - Conta na [Z-API](https://z-api.io) com instância WhatsApp conectada
 - Bucket Cloudflare R2 com URL pública habilitada
 - Chave de API da Anthropic (para Claude Sonnet)
@@ -171,9 +164,6 @@ PORT=3000
 
 # PostgreSQL
 DATABASE_URL=postgresql://usuario:senha@host:5432/banco
-
-# Redis (BullMQ)
-REDIS_URL=redis://localhost:6379
 
 # Anthropic (Claude vision)
 ANTHROPIC_API_KEY=sk-ant-...
@@ -212,7 +202,7 @@ INSERT INTO users (phone_number) VALUES ('5511999999999');
 npm run dev
 ```
 
-O servidor e o worker sobem no mesmo processo.
+O servidor Fastify sobe em um único processo, sem worker/fila separados.
 
 ### 6. Configurar o webhook no Z-API
 
@@ -232,12 +222,12 @@ O arquivo `railway.json` está configurado para o builder **Nixpacks** e define 
 |---|---|---|
 | Build | `npm run build` | Compila TypeScript para `dist/` |
 | Pré-deploy | `npm run db:migrate` | Aplica todas as migrations **automaticamente** a cada deploy (idempotente) |
-| Start | `node dist/server.js` | Sobe o servidor Fastify + worker BullMQ no mesmo processo |
+| Start | `node dist/server.js` | Sobe o servidor Fastify (análise de IA roda in-process, sem worker separado) |
 
 - **Healthcheck:** `GET /health`. **Restart:** `ON_FAILURE` (até 10 tentativas).
 - **Versão do Node:** fixada em 20 via `.nvmrc` + `engines` no `package.json`.
-- **Serviços a adicionar no projeto Railway:** PostgreSQL e Redis (plugins) — depois preencha `DATABASE_URL` e `REDIS_URL` nas variáveis.
-- **Variáveis de ambiente:** configure no painel do Railway todas as do `.env.example` (`DATABASE_URL`, `REDIS_URL`, `ANTHROPIC_API_KEY`, `ZAPI_*`, `R2_*`). `PORT` é injetada pelo Railway.
+- **Serviços a adicionar no projeto Railway:** PostgreSQL (plugin) — depois preencha `DATABASE_URL` nas variáveis.
+- **Variáveis de ambiente:** configure no painel do Railway todas as do `.env.example` (`DATABASE_URL`, `ANTHROPIC_API_KEY`, `ZAPI_*`, `R2_*`). `PORT` é injetada pelo Railway.
 - **Observação:** o pré-deploy usa `tsx` (devDependency); não habilite poda de devDependencies (`NPM_CONFIG_PRODUCTION`/`--omit=dev`), senão a migration não roda.
 
 ### 8. Configurar o atalho no iPhone (Shortcut)
@@ -338,7 +328,7 @@ O **backend já está pronto** (`POST /entries/photo` — ver "O que está imple
 
 ```
 src/
-├── server.ts          # Ponto de entrada (inicia Fastify + worker BullMQ)
+├── server.ts          # Ponto de entrada (inicia Fastify)
 ├── app.ts             # Factory do Fastify (buildApp)
 ├── config.ts          # Validação de env vars via Zod
 ├── types/
@@ -349,18 +339,15 @@ src/
 │   └── migrations/
 │       ├── 001_initial_schema.sql
 │       └── 002_add_users_api_token.sql
-├── queues/
-│   └── entry.ts       # Fila BullMQ + conexão Redis (enqueueAnalysis)
 ├── routes/
 │   ├── health.ts      # GET /health
 │   ├── webhook.ts     # POST /webhook/whatsapp
 │   └── entries.ts     # POST /entries/photo (captura REST, auth Bearer)
-├── services/
-│   ├── ai.ts          # Chamada Claude Sonnet vision + parse do JSON de resposta
-│   ├── storage.ts     # Upload para Cloudflare R2
-│   └── whatsapp.ts    # Download de foto + envio de mensagem via Z-API
-└── workers/
-    └── analyze-entry.ts  # Worker BullMQ: busca entry → contexto → IA → persiste
+└── services/
+    ├── ai.ts               # Chamada Claude Sonnet vision + parse do JSON de resposta
+    ├── analysis-runner.ts  # busca entry → contexto → IA → persiste, com retry (in-process)
+    ├── storage.ts          # Upload para Cloudflare R2
+    └── whatsapp.ts         # Download de foto + envio de mensagem via Z-API
 ```
 
 ---
@@ -369,9 +356,9 @@ src/
 
 - **Webhook sempre retorna 200** — qualquer outro status dispara retries automáticos do Z-API, causando duplicações.
 - **Upload R2 antes do INSERT** — se o banco falhar após o upload, a foto fica órfã no R2 (aceitável); se o R2 falhar, nada é persistido.
-- **Enfileiramento fire-and-forget** — o webhook não aguarda a análise de IA; o job é enfileirado após o INSERT e erros de enfileiramento são apenas logados, sem afetar a resposta ao usuário.
-- **Idempotência do worker** — jobs com `ai_cycles > 0` são descartados, protegendo contra reprocessamento em caso de retries.
-- **Transação no worker** — o UPDATE de `entries` e os INSERTs de `food_items` acontecem em uma única transação; falha em qualquer item faz rollback completo, permitindo nova tentativa limpa.
+- **Análise fire-and-forget no webhook** — a captura via WhatsApp não aguarda a análise de IA; ela é disparada após o INSERT e erros são apenas logados, sem afetar a resposta ao usuário.
+- **Idempotência da análise** — entradas com `ai_cycles > 0` são descartadas sem correção, protegendo contra reprocessamento em caso de retries.
+- **Transação na análise** — o UPDATE de `entries` e os INSERTs de `food_items` acontecem em uma única transação; falha em qualquer item faz rollback completo, permitindo nova tentativa limpa.
 - **Contexto calibrado de IA** — os 20 alimentos distintos mais frequentes do usuário são passados como calibração; nunca o histórico bruto completo.
 - **Autenticação por telefone** — uso pessoal; sem login/senha/OAuth; cadastro manual no banco.
 - **Endpoint REST com códigos HTTP corretos** — diferente do webhook (que sempre responde 200 por exigência do Z-API), `POST /entries/photo` retorna 201/400/401/413/500. Múltiplas fotos na mesma requisição viram **uma** entrada (ângulos da mesma refeição); o upload ao R2 também ocorre antes do INSERT.
