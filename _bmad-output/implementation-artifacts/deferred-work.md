@@ -1,5 +1,10 @@
 # Deferred Work
 
+## Ordenação recente-primeiro + branding/Share (encontradas na revisão)
+
+- **Sem tie-breaker nos comparadores de `created_at`**: `sortByCreated` (`web/src/App.tsx`) e os pontos que a usam não têm critério de desempate para entries com `created_at` idêntico (ex.: import em lote, resolução de relógio). Como o sort é estável e a ordem de origem é ascendente, entries empatadas mantêm a ordem antiga-primeiro dentro do empate — quebra silenciosamente a garantia de "mais recente primeiro" só nesse caso raro. Mesma classe de risco já aceita em outros pontos do app para uso pessoal single-user; revisitar se surgirem entries com timestamps colididos com frequência.
+- **Favicon sem fallback**: só há `<link rel="icon" type="image/svg+xml">` (`web/index.html`) — sem `.ico`/PNG para navegadores sem suporte a favicon SVG, e sem `apple-touch-icon` para "Adicionar à Tela de Início" no iOS (ex.: nutricionista salvando o link de share). Gerar os assets extras se isso incomodar na prática.
+
 ## Story 3.2 — Vista Parede de Fotos (encontrado na revisão)
 
 - **Focus return após fechar modal**: ao fechar `PhotoWallModal`, o foco retorna para `document.body` em vez do botão de célula que abriu o modal. Impacta usuários de teclado/leitores de tela. Correto seria salvar `document.activeElement` antes de abrir e restaurar no `onClose`.
