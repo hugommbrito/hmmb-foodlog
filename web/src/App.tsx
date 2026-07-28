@@ -126,7 +126,9 @@ export function dayTotals(entries: EntryWithFoods[]): string | null {
 type SortDir = 'desc' | 'asc';
 
 // Pure creation-order sort: 'desc' = newest first, 'asc' = oldest first.
-function sortByCreated(list: EntryWithFoods[], dir: SortDir): EntryWithFoods[] {
+// Generic over any entry shape with `created_at` so Share.tsx's `SharedEntry`
+// can reuse it too.
+export function sortByCreated<T extends { created_at: string }>(list: T[], dir: SortDir): T[] {
   return [...list].sort((a, b) => {
     const diff = new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
     return dir === 'asc' ? diff : -diff;
@@ -623,7 +625,7 @@ function TimelineView({ slots, tags }: { slots: DashboardSlot[]; tags: ContextTa
   return (
     <>
       <div className="rtl-wrap">
-        {slots.map((slot) => {
+        {[...slots].reverse().map((slot) => {
           if (slot.status === 'loading') {
             return <div key={slot.date} className="skeleton-item rtl-skeleton" aria-hidden="true" />;
           }
@@ -741,7 +743,7 @@ function DashboardCalendarView({ slots }: { slots: DashboardSlot[] }) {
     const done = new Map<string, EntryWithFoods[]>();
     const loading = new Set<string>();
     for (const slot of slots) {
-      if (slot.status === 'done' && slot.entries.length > 0) done.set(slot.date, slot.entries);
+      if (slot.status === 'done' && slot.entries.length > 0) done.set(slot.date, sortByCreated(slot.entries, 'desc'));
       else if (slot.status === 'loading') loading.add(slot.date);
     }
     return { done, loading };
@@ -749,7 +751,7 @@ function DashboardCalendarView({ slots }: { slots: DashboardSlot[] }) {
 
   const start = slots[0]?.date ?? todayLocal();
   const end = slots[slots.length - 1]?.date ?? todayLocal();
-  const months = useMemo(() => monthsBetween(start, end), [start, end]);
+  const months = useMemo(() => [...monthsBetween(start, end)].reverse(), [start, end]);
 
   return (
     <>

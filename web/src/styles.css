@@ -323,9 +323,21 @@ button.link.danger { color: var(--danger); }
 .log-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85rem; }
 .log-meta { color: var(--muted); font-size: 0.75rem; white-space: nowrap; }
 
-.seg { display: flex; gap: var(--space-1); margin: var(--space-3) 0 var(--space-2); }
+.seg { display: flex; flex-wrap: wrap; gap: var(--space-1); margin: var(--space-3) 0 var(--space-2); }
 .seg-btn { background: none; border: 1px solid var(--border); color: var(--muted); padding: var(--space-1) var(--space-3); border-radius: var(--radius-pill); font-size: 0.8rem; }
 .seg-btn.active { color: var(--accent); border-color: var(--accent); font-weight: 600; }
+
+/* "Padrões Alimentares" is an AI analysis, not another raw-data view — set it
+   apart from the sibling view tabs with its own resting-state tint and a
+   leading gap, so it never reads as just a fifth view. */
+.seg-btn-ai {
+  margin-left: var(--space-2);
+  background: var(--accent-light);
+  border-color: var(--accent-light);
+  color: var(--accent);
+  font-weight: 600;
+}
+.seg-btn-ai.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 
 .dir { font-size: 0.85rem; font-weight: 700; width: 1.1em; text-align: center; }
 .dir-in { color: var(--muted); }
@@ -472,6 +484,15 @@ button.link.danger { color: var(--danger); }
 
 /* CAP-7b: AI pattern analysis (nutritionist view) */
 .patterns { display: flex; flex-direction: column; gap: var(--space-3); }
+.patterns-disclaimer {
+  margin: 0;
+  padding: var(--space-3);
+  background: var(--accent-light);
+  border-radius: var(--radius-input);
+  color: var(--text);
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
 .patterns-summary { margin: 0 0 var(--space-1); color: var(--text); }
 .pattern-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: var(--space-2); }
 .pattern-card {

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import { fetchShared, fetchSharedPatterns, ShareExpiredError, ShareInvalidError } from './api';
-import { DayModal, FoodRow, mealTotals } from './App';
+import { DayModal, FoodRow, mealTotals, sortByCreated } from './App';
 import type { DayEntry } from './App';
 import type { PatternsPayload, SharedEntry, SharedPayload } from './types';
 import { monthsBetween, monthCells, monthLabel } from './calendarUtils';
@@ -122,7 +123,7 @@ export function PublicShare({ token }: { token: string }) {
   return (
     <div className="public">
       <header className="public-head">
-        <h1>Histórico alimentar</h1>
+        <h1>Histórico alimentar — Visão do Nutricionista</h1>
         <p className="period">
           {fmtDateBR(data.period_start)} — {fmtDateBR(data.period_end)}
         </p>
@@ -157,10 +158,10 @@ export function PublicShare({ token }: { token: string }) {
           </button>
           <button
             type="button"
-            className={view === 'patterns' ? 'seg-btn active' : 'seg-btn'}
+            className={view === 'patterns' ? 'seg-btn seg-btn-ai active' : 'seg-btn seg-btn-ai'}
             onClick={() => setView('patterns')}
           >
-            Padrões
+            <span aria-hidden="true">✨</span> Padrões Alimentares
           </button>
         </div>
         {view !== 'patterns' && (
@@ -228,14 +229,21 @@ function PatternsView({
   data: PatternsPayload | null;
   onRetry: () => void;
 }) {
+  const disclaimer = (
+    <p className="patterns-disclaimer">
+      Esta análise é feita por IA e não traz nenhuma recomendação (esta função pertence aos
+      profissionais da Saúde); a análise de padrões alimentares tem como objetivo dar insumos ao
+      profissional para embasar sua tomada de decisão.
+    </p>
+  );
+
+  let body: ReactNode;
   if (status === 'idle' || status === 'loading') {
-    return <div className="banner">Analisando padrões com IA…</div>;
-  }
-  if (status === 'gone') {
-    return <div className="empty">Link indisponível.</div>;
-  }
-  if (status === 'error') {
-    return (
+    body = <div className="banner">Analisando padrões com IA…</div>;
+  } else if (status === 'gone') {
+    body = <div className="empty">Link indisponível.</div>;
+  } else if (status === 'error') {
+    body = (
       <div className="empty">
         <p>Não foi possível gerar a análise.</p>
         <button type="button" className="seg-btn" onClick={onRetry}>
@@ -243,25 +251,32 @@ function PatternsView({
         </button>
       </div>
     );
+  } else if (!data || data.insufficient || !data.analysis || data.analysis.observations.length === 0) {
+    // status === 'ok', but nothing usable came back
+    body = <div className="empty">Dados insuficientes para a análise de padrões neste período.</div>;
+  } else {
+    const { observations, summary } = data.analysis;
+    body = (
+      <>
+        {summary && <p className="patterns-summary">{summary}</p>}
+        <ul className="pattern-list">
+          {observations.map((o, i) => (
+            <li className="pattern-card" key={i}>
+              <span className="pattern-cat">{o.category}</span>
+              <strong className="pattern-title">{o.title}</strong>
+              <p className="pattern-detail">{o.detail}</p>
+            </li>
+          ))}
+        </ul>
+        <p className="patterns-meta">Análise gerada por IA a partir dos registros do período.</p>
+      </>
+    );
   }
-  // status === 'ok'
-  if (!data || data.insufficient || !data.analysis || data.analysis.observations.length === 0) {
-    return <div className="empty">Dados insuficientes para a análise de padrões neste período.</div>;
-  }
-  const { observations, summary } = data.analysis;
+
   return (
     <div className="patterns">
-      {summary && <p className="patterns-summary">{summary}</p>}
-      <ul className="pattern-list">
-        {observations.map((o, i) => (
-          <li className="pattern-card" key={i}>
-            <span className="pattern-cat">{o.category}</span>
-            <strong className="pattern-title">{o.title}</strong>
-            <p className="pattern-detail">{o.detail}</p>
-          </li>
-        ))}
-      </ul>
-      <p className="patterns-meta">Análise gerada por IA a partir dos registros do período.</p>
+      {disclaimer}
+      {body}
     </div>
   );
 }
@@ -285,10 +300,11 @@ function CalendarView({
       if (list) list.push(e);
       else map.set(key, [e]);
     }
+    for (const [key, list] of map) map.set(key, sortByCreated(list, 'desc'));
     return map;
   }, [entries]);
 
-  const months = useMemo(() => monthsBetween(start, end), [start, end]);
+  const months = useMemo(() => [...monthsBetween(start, end)].reverse(), [start, end]);
 
   return (
     <div className="cal-wrap">
@@ -338,9 +354,10 @@ function CalendarView({
 }
 
 function SharePhotoWallView({ entries }: { entries: SharedEntry[] }) {
+  const sorted = sortByCreated(entries, 'desc');
   return (
     <div className="photowall-grid">
-      {entries.map((e) => {
+      {sorted.map((e) => {
         const time = new Date(e.created_at).toLocaleTimeString('pt-BR', {
           timeZone: 'America/Sao_Paulo',
           hour: '2-digit',
@@ -397,7 +414,7 @@ function ShareTimelineView({ entries }: { entries: SharedEntry[] }) {
       if (list) list.push(e);
       else map.set(key, [e]);
     }
-    return Array.from(map.entries()).sort(([a], [b]) => a.localeCompare(b));
+    return Array.from(map.entries()).sort(([a], [b]) => b.localeCompare(a));
   }, [entries]);
 
   function dayLabel(dateStr: string): [string, string, boolean] {
@@ -497,7 +514,9 @@ function ShareTimelineView({ entries }: { entries: SharedEntry[] }) {
 }
 
 function ListView({ entries }: { entries: SharedEntry[] }) {
-  // Entries arrive chronological (asc). Group by local day, with a per-day macro total.
+  // Group by local day, then show most recent day first and most recent
+  // entry first within each day (explicit day-key sort, not reliant on the
+  // entries' incoming order).
   const days = useMemo(() => {
     const map = new Map<string, SharedEntry[]>();
     for (const e of entries) {
@@ -506,7 +525,9 @@ function ListView({ entries }: { entries: SharedEntry[] }) {
       if (list) list.push(e);
       else map.set(key, [e]);
     }
-    return Array.from(map.entries());
+    return Array.from(map.entries())
+      .sort(([a], [b]) => b.localeCompare(a))
+      .map(([day, dayEntries]) => [day, sortByCreated(dayEntries, 'desc')] as [string, SharedEntry[]]);
   }, [entries]);
 
   return (
