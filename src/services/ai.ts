@@ -155,10 +155,10 @@ export async function analyzeEntry(
   const response = await withOutboundAudit(
     'anthropic',
     'messages.create',
-    { model: 'claude-sonnet-4-6', photos: photos.length },
+    { model: 'claude-sonnet-5', photos: photos.length },
     () =>
       anthropic.messages.create({
-        model: 'claude-sonnet-4-6',
+        model: 'claude-sonnet-5',
         max_tokens: 2048,
         system: SYSTEM_PROMPT,
         messages: [{ role: 'user', content }],
