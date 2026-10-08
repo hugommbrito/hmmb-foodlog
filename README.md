@@ -79,7 +79,7 @@ A análise roda in-process (função assíncrona chamada diretamente, sem fila/w
 2. Busca a entrada no banco (ignora se `ai_cycles > 0` sem correção — evita duplicações)
 3. Carrega os **20 alimentos distintos mais frequentes** do usuário como contexto de calibração
 4. Busca as fotos do R2 e as converte para base64
-5. Envia para **Claude Sonnet** (`claude-sonnet-4-6`) com visão — retorna JSON estruturado
+5. Envia para **Claude Sonnet** (`claude-sonnet-5`) com visão — retorna JSON estruturado
 6. Em transação: atualiza `entries` (título, confidence, ai_cycles) e insere os `food_items`
 
 A análise tem **3 tentativas** com backoff exponencial (1 s, 2 s, 4 s) em caso de falha.
