@@ -1,6 +1,7 @@
 import { FastifyInstance, FastifyRequest } from 'fastify';
 import { query } from '../db/client';
 import { analyzePatterns } from '../services/ai';
+import { dropMarkedDays, loadDayMarks } from '../services/day-marks';
 import { EntryQueryRow, PatternEntryInput, ReportQuery, User, WeeklyReportRow } from '../types/models';
 
 // Minimal local copy of Bearer-token auth (same convention as routes/entries.ts).
@@ -78,6 +79,11 @@ export async function reportRoutes(app: FastifyInstance): Promise<void> {
       periodEnd = windowRows[0].period_end;
     }
 
+    // --- Day marks in the period: excluded from the analysis and echoed back so
+    // the UI can say which days were left out. Loaded before the cache check so a
+    // cache hit carries them too (a mark change invalidates the cache anyway).
+    const dayMarks = await loadDayMarks(userId, periodStart, periodEnd);
+
     // --- Cache lookup (skipped when force=true) ---
     if (!forceRefresh) {
       const cacheRows = await query<WeeklyReportRow>(
@@ -102,6 +108,7 @@ export async function reportRoutes(app: FastifyInstance): Promise<void> {
           period_start: cached.period_start,
           period_end: cached.period_end,
           analysis: cached.analysis_json,
+          excluded_days: dayMarks,
         });
       }
     }
@@ -129,14 +136,17 @@ export async function reportRoutes(app: FastifyInstance): Promise<void> {
       [userId, periodStart, periodEnd]
     );
 
-    // --- Sufficiency guard: need entries in ≥3 distinct local SP days ---
-    const distinctDays = new Set(rawEntries.map((e) => toSPDateStr(e.created_at)));
+    // --- Drop entries on marked (skipped/partial) days: they must not shape the patterns ---
+    const analyzable = dropMarkedDays(rawEntries, dayMarks);
+
+    // --- Sufficiency guard: need entries in ≥3 distinct local SP days (marked days don't count) ---
+    const distinctDays = new Set(analyzable.map((e) => toSPDateStr(e.created_at)));
     if (distinctDays.size < 3) {
-      return reply.status(200).send({ insufficient: true });
+      return reply.status(200).send({ insufficient: true, excluded_days: dayMarks });
     }
 
     // --- Build PatternEntryInput[] ---
-    const entries: PatternEntryInput[] = rawEntries.map((row) => ({
+    const entries: PatternEntryInput[] = analyzable.map((row) => ({
       created_at: row.created_at,
       context: row.context,
       foods: row.foods.map((f) => ({
@@ -155,7 +165,7 @@ export async function reportRoutes(app: FastifyInstance): Promise<void> {
     // --- Call analyzePatterns (may throw → 502) ---
     let analysis;
     try {
-      analysis = await analyzePatterns(entries);
+      analysis = await analyzePatterns(entries, dayMarks);
     } catch (err) {
       app.log.error(err, '[report] pattern analysis failed');
       const detail = err instanceof Error ? err.message : String(err);
@@ -178,6 +188,7 @@ export async function reportRoutes(app: FastifyInstance): Promise<void> {
       period_start: periodStart,
       period_end: periodEnd,
       analysis,
+      excluded_days: dayMarks,
     });
   });
 }

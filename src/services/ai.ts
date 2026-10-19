@@ -1,7 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
 import { config } from '../config';
-import { AiAnalysisResult, PatternAnalysis, PatternEntryInput } from '../types/models';
+import { AiAnalysisResult, DayMark, PatternAnalysis, PatternEntryInput } from '../types/models';
 import { scrubSecrets, withOutboundAudit } from './audit';
 
 const anthropic = new Anthropic({ apiKey: config.ANTHROPIC_API_KEY, timeout: 60_000 });
@@ -209,6 +209,10 @@ const PATTERNS_SYSTEM_PROMPT =
   'recurring meal times/schedules, variation of macros by day type (e.g. weekday vs weekend), and ' +
   'correlations between context/setting and food choices. Base every claim ONLY on the provided data — ' +
   'never fabricate numbers or trends not present. ' +
+  'The patient may flag days as intentionally NOT logged or only PARTIALLY logged; those days are removed ' +
+  'from the log you receive and listed separately in the user message. Never treat such days as fasting, ' +
+  'skipped meals or low intake, never draw conclusions about them, and never count them when describing ' +
+  'how often something happens (reason only over the days present in the log). ' +
   'IMPORTANT: write every textual value (category, title, detail, summary) in Brazilian Portuguese (pt-BR). ' +
   'Keep the JSON keys exactly as shown above, in English. No markdown — JSON only.';
 
@@ -242,13 +246,30 @@ function formatEntryLine(e: PatternEntryInput): string {
   return `${dt} · ${ctx} · ${foods}`;
 }
 
-export async function analyzePatterns(entries: PatternEntryInput[]): Promise<PatternAnalysis> {
+// 'YYYY-MM-DD' → 'DD/MM', the same day format the digest lines use.
+function formatMarkedDay(m: DayMark): string {
+  const [, mm, dd] = m.day.split('-');
+  const label = m.status === 'skipped' ? 'não preenchido' : 'preenchido parcialmente';
+  return `- ${dd}/${mm}: ${label}`;
+}
+
+// `excludedDays` are the user's day marks inside the period. Their entries (if
+// any) have ALREADY been removed from `entries` by the caller (dropMarkedDays);
+// here they are only described to the model so a deliberate gap is never read
+// as fasting or a skipped meal.
+export async function analyzePatterns(entries: PatternEntryInput[], excludedDays: DayMark[] = []): Promise<PatternAnalysis> {
   const digest = entries.map(formatEntryLine).join('\n');
+  const excludedCtx =
+    excludedDays.length > 0
+      ? `\n\nDias marcados pelo paciente como fora da análise (os registros desses dias, se houver, NÃO estão ` +
+        `na lista acima; não interprete a ausência de refeições nesses dias como jejum, refeição pulada ou ` +
+        `baixa ingestão, e não os conte ao descrever frequências):\n${excludedDays.map(formatMarkedDay).join('\n')}`
+      : '';
 
   const response = await withOutboundAudit(
     'anthropic',
     'analyze-patterns',
-    { model: 'claude-opus-5', entries: entries.length },
+    { model: 'claude-opus-5', entries: entries.length, excluded_days: excludedDays.length },
     () =>
       anthropic.messages.create(
         {
@@ -260,7 +281,7 @@ export async function analyzePatterns(entries: PatternEntryInput[]): Promise<Pat
           messages: [
             {
               role: 'user',
-              content: `Food log for the period (one line per meal):\n${digest}\n\nReturn the JSON.`,
+              content: `Food log for the period (one line per meal):\n${digest}${excludedCtx}\n\nReturn the JSON.`,
             },
           ],
         },

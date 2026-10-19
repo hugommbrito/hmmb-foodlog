@@ -1,6 +1,7 @@
 import { FastifyInstance, FastifyRequest } from 'fastify';
 import { query } from '../db/client';
 import { analyzePatterns } from '../services/ai';
+import { dropMarkedDays, loadDayMarks } from '../services/day-marks';
 import { PatternAnalysis, SharedEntry, User } from '../types/models';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -197,12 +198,17 @@ export async function shareRoutes(app: FastifyInstance): Promise<void> {
     }
 
     const entries = await loadPeriodEntries(link.user_id, link.period_start, link.period_end);
+    // Day marks are public, non-PII context for the nutritionist: which days the
+    // patient deliberately did not (fully) log. Entries on those days are still
+    // shown here — only the AI analysis leaves them out.
+    const dayMarks = await loadDayMarks(link.user_id, link.period_start, link.period_end);
 
     return reply.status(200).send({
       period_start: link.period_start,
       period_end: link.period_end,
       expires_at: link.expires_at,
       entries,
+      day_marks: dayMarks,
     });
   });
 
@@ -241,26 +247,36 @@ export async function shareRoutes(app: FastifyInstance): Promise<void> {
       return reply.status(410).send({ error: 'Link expirado' });
     }
 
+    // Marked (skipped/partial) days: dropped from the analysis input, described to
+    // the model as deliberate gaps, and echoed back for the UI. Loaded before the
+    // cache check so a cache hit carries them too (a mark change resets the cache).
+    const dayMarks = await loadDayMarks(link.user_id, link.period_start, link.period_end);
+
     // Cache hit: serve the stored analysis, no Claude call.
     if (link.analysis_json) {
       return reply.status(200).send({
         generated_at: link.analysis_generated_at,
         analysis: link.analysis_json,
+        excluded_days: dayMarks,
       });
     }
 
-    const entries = await loadPeriodEntries(link.user_id, link.period_start, link.period_end);
+    const entries = dropMarkedDays(
+      await loadPeriodEntries(link.user_id, link.period_start, link.period_end),
+      dayMarks
+    );
 
-    // Need entries spread over >= 3 local days for meaningful patterns; otherwise
-    // skip the (paid) Claude call and don't cache, so a later access can recompute.
+    // Need entries spread over >= 3 local days for meaningful patterns (marked days
+    // don't count); otherwise skip the (paid) Claude call and don't cache, so a
+    // later access can recompute.
     const distinctDays = new Set(entries.map((e) => spDayKey(e.created_at)));
     if (distinctDays.size < 3) {
-      return reply.status(200).send({ insufficient: true });
+      return reply.status(200).send({ insufficient: true, excluded_days: dayMarks });
     }
 
     let analysis: PatternAnalysis;
     try {
-      analysis = await analyzePatterns(entries);
+      analysis = await analyzePatterns(entries, dayMarks);
     } catch (err) {
       request.log.error({ err: (err as Error).message }, '[share] pattern analysis failed');
       return reply.status(502).send({ error: 'Não foi possível gerar a análise' });
@@ -275,6 +291,7 @@ export async function shareRoutes(app: FastifyInstance): Promise<void> {
     return reply.status(200).send({
       generated_at: saved[0]?.analysis_generated_at ?? null,
       analysis,
+      excluded_days: dayMarks,
     });
   });
 }

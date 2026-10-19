@@ -63,6 +63,18 @@ export interface PatternEntryInput {
   foods: FoodItem[];
 }
 
+// Day marks: the user flags a local (America/Sao_Paulo) day as intentionally
+// 'skipped' (nothing logged on purpose) or 'partial' (some meals logged, not
+// all). Marked days are dropped from the AI pattern analysis and listed to the
+// model as deliberate gaps, so they are never read as fasting/skipped meals.
+// No row for a day = normal day.
+export type DayMarkStatus = 'skipped' | 'partial';
+
+export interface DayMark {
+  day: string; // 'YYYY-MM-DD'
+  status: DayMarkStatus;
+}
+
 export interface PhotoCaptureResponse {
   entry_id: string;
   analysis_status: AnalysisStatus;

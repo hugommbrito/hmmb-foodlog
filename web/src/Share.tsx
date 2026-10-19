@@ -1,9 +1,19 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { fetchShared, fetchSharedPatterns, ShareExpiredError, ShareInvalidError } from './api';
-import { DayModal, FoodRow, mealTotals, sortByCreated } from './App';
+import {
+  DAY_MARK_GLYPH,
+  DAY_MARK_LABEL,
+  DayMarkBadge,
+  DayModal,
+  ExcludedDaysNote,
+  FoodRow,
+  marksToMap,
+  mealTotals,
+  sortByCreated,
+} from './App';
 import type { DayEntry } from './App';
-import type { PatternsPayload, SharedEntry, SharedPayload } from './types';
+import type { DayMarkStatus, PatternsPayload, SharedEntry, SharedPayload } from './types';
 import { monthsBetween, monthCells, monthLabel } from './calendarUtils';
 
 // Local day key in the same timezone the backend filters on, so grouping matches
@@ -95,6 +105,10 @@ export function PublicShare({ token }: { token: string }) {
     );
   }, [data, foodFilter]);
 
+  // Days the patient marked as não preenchido / parcial (public, non-PII).
+  const marks = useMemo(() => marksToMap(data?.day_marks ?? []), [data]);
+  const filtering = foodFilter.trim().length >= 2;
+
   if (status === 'loading') {
     return (
       <div className="public">
@@ -119,6 +133,11 @@ export function PublicShare({ token }: { token: string }) {
       </div>
     );
   }
+
+  // Calendário/Lista can still show marked days with no entries (unless a food
+  // filter is on); Parede de Fotos/Timeline are entry-only, so they stay empty.
+  const entryOnlyView = view === 'photowall' || view === 'timeline';
+  const showEmpty = filteredEntries.length === 0 && (filtering || entryOnlyView || marks.size === 0);
 
   return (
     <div className="public">
@@ -195,15 +214,16 @@ export function PublicShare({ token }: { token: string }) {
             setPatternsStatus('idle');
           }}
         />
-      ) : filteredEntries.length === 0 ? (
+      ) : showEmpty ? (
         <div className="empty">
-          {foodFilter.trim().length >= 2
+          {filtering
             ? `Nenhum resultado para "${foodFilter.trim()}".`
             : 'Sem registros neste período.'}
         </div>
       ) : view === 'calendar' ? (
         <CalendarView
           entries={filteredEntries}
+          marks={marks}
           start={data.period_start}
           end={data.period_end}
           onDayClick={(dayEntries) => setDayModal(dayEntries)}
@@ -211,9 +231,9 @@ export function PublicShare({ token }: { token: string }) {
       ) : view === 'photowall' ? (
         <SharePhotoWallView entries={filteredEntries} />
       ) : view === 'timeline' ? (
-        <ShareTimelineView entries={filteredEntries} />
+        <ShareTimelineView entries={filteredEntries} marks={marks} />
       ) : (
-        <ListView entries={filteredEntries} />
+        <ListView entries={filteredEntries} marks={marks} includeEmptyMarkedDays={!filtering} />
       )}
       {dayModal && <DayModal entries={dayModal} onClose={() => setDayModal(null)} />}
     </div>
@@ -253,11 +273,17 @@ function PatternsView({
     );
   } else if (!data || data.insufficient || !data.analysis || data.analysis.observations.length === 0) {
     // status === 'ok', but nothing usable came back
-    body = <div className="empty">Dados insuficientes para a análise de padrões neste período.</div>;
+    body = (
+      <div className="empty">
+        <p>Dados insuficientes para a análise de padrões neste período (dias marcados não contam).</p>
+        <ExcludedDaysNote days={data?.excluded_days} />
+      </div>
+    );
   } else {
     const { observations, summary } = data.analysis;
     body = (
       <>
+        <ExcludedDaysNote days={data.excluded_days} />
         {summary && <p className="patterns-summary">{summary}</p>}
         <ul className="pattern-list">
           {observations.map((o, i) => (
@@ -283,11 +309,13 @@ function PatternsView({
 
 function CalendarView({
   entries,
+  marks,
   start,
   end,
   onDayClick,
 }: {
   entries: SharedEntry[];
+  marks: Map<string, DayMarkStatus>;
   start: string;
   end: string;
   onDayClick?: (dayEntries: SharedEntry[]) => void;
@@ -323,14 +351,20 @@ function CalendarView({
               }
               const inRange = day >= start && day <= end;
               const dayEntries = byDay.get(day) ?? [];
+              const mark = inRange ? marks.get(day) : undefined;
               const thumbs = dayEntries.map((e) => e.photos[0]).filter(Boolean).slice(0, 3);
               const overflow = dayEntries.length - thumbs.length;
               const hasEntriesNoPhoto = inRange && dayEntries.length > 0 && thumbs.length === 0;
               const clickable = inRange && dayEntries.length > 0 && !!onDayClick;
-              const cls = `cal-cell${inRange ? '' : ' out'}`;
+              const cls = `cal-cell${inRange ? '' : ' out'}${mark ? ` cal-cell-${mark}` : ''}`;
               const inner = (
                 <>
                   <span className="cal-day">{Number(day.slice(8))}</span>
+                  {mark && (
+                    <span className={`cal-mark ${mark}`} title={DAY_MARK_LABEL[mark]} aria-label={DAY_MARK_LABEL[mark]}>
+                      {DAY_MARK_GLYPH[mark]}
+                    </span>
+                  )}
                   {thumbs.length > 0 && (
                     <div className="cal-thumbs">
                       {thumbs.map((url, j) => (
@@ -403,7 +437,7 @@ const SHR_TICKS = Array.from({ length: SHR_TOTAL + 1 }, (_, i) => {
   return { i, isHour, hour, showLabel: isHour && i % 8 === 0 };
 });
 
-function ShareTimelineView({ entries }: { entries: SharedEntry[] }) {
+function ShareTimelineView({ entries, marks }: { entries: SharedEntry[]; marks: Map<string, DayMarkStatus> }) {
   const [modal, setModal] = useState<SharedEntry | null>(null);
 
   const days = useMemo(() => {
@@ -439,6 +473,7 @@ function ShareTimelineView({ entries }: { entries: SharedEntry[] }) {
       <div className="rtl-wrap">
         {days.map(([day, dayEntries]) => {
           const [weekday, datePart, isWeekend] = dayLabel(day);
+          const mark = marks.get(day);
           const sorted = [...dayEntries].sort(
             (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
           );
@@ -459,9 +494,14 @@ function ShareTimelineView({ entries }: { entries: SharedEntry[] }) {
 
           return (
             <div key={day} className={`rtl-day${isWeekend ? ' rtl-day-weekend' : ''}`}>
-              <div className="rtl-label" aria-label={`${weekday} ${datePart}`}>
+              <div className="rtl-label" aria-label={`${weekday} ${datePart}${mark ? `, ${DAY_MARK_LABEL[mark]}` : ''}`}>
                 <span className="rtl-label-day">{weekday}</span>
                 <span className="rtl-label-date">{datePart}</span>
+                {mark && (
+                  <span className={`rtl-label-mark ${mark}`} title={DAY_MARK_LABEL[mark]} aria-hidden="true">
+                    {DAY_MARK_GLYPH[mark]}
+                  </span>
+                )}
               </div>
               <div className="rtl-content">
                 <div className="rtl-inner">
@@ -513,10 +553,19 @@ function ShareTimelineView({ entries }: { entries: SharedEntry[] }) {
   );
 }
 
-function ListView({ entries }: { entries: SharedEntry[] }) {
+function ListView({
+  entries,
+  marks,
+  includeEmptyMarkedDays,
+}: {
+  entries: SharedEntry[];
+  marks: Map<string, DayMarkStatus>;
+  includeEmptyMarkedDays: boolean;
+}) {
   // Group by local day, then show most recent day first and most recent
   // entry first within each day (explicit day-key sort, not reliant on the
-  // entries' incoming order).
+  // entries' incoming order). Marked days with no entries get an (empty)
+  // section so a deliberate gap stays visible — except while a food filter is on.
   const days = useMemo(() => {
     const map = new Map<string, SharedEntry[]>();
     for (const e of entries) {
@@ -525,21 +574,33 @@ function ListView({ entries }: { entries: SharedEntry[] }) {
       if (list) list.push(e);
       else map.set(key, [e]);
     }
+    if (includeEmptyMarkedDays) {
+      for (const day of marks.keys()) {
+        if (!map.has(day)) map.set(day, []);
+      }
+    }
     return Array.from(map.entries())
       .sort(([a], [b]) => b.localeCompare(a))
       .map(([day, dayEntries]) => [day, sortByCreated(dayEntries, 'desc')] as [string, SharedEntry[]]);
-  }, [entries]);
+  }, [entries, marks, includeEmptyMarkedDays]);
 
   return (
     <div className="shared-list">
       {days.map(([day, dayEntries]) => {
         const dayTotals = mealTotals(dayEntries.flatMap((e) => e.foods));
+        const mark = marks.get(day);
         return (
           <section className="shared-day" key={day}>
             <div className="shared-day-head">
-              <h2>{fmtDateBR(day)}</h2>
+              <div className="shared-day-title">
+                <h2>{fmtDateBR(day)}</h2>
+                {mark && <DayMarkBadge status={mark} />}
+              </div>
               {dayTotals && <span className="totals">{dayTotals}</span>}
             </div>
+            {dayEntries.length === 0 && mark ? (
+              <p className="day-mark-note">Sem registros — dia marcado como {DAY_MARK_LABEL[mark].toLowerCase()}.</p>
+            ) : (
             <ul className="cards">
               {dayEntries.map((entry) => (
                 <li className="card" key={entry.id}>
@@ -571,6 +632,7 @@ function ListView({ entries }: { entries: SharedEntry[] }) {
                 </li>
               ))}
             </ul>
+            )}
           </section>
         );
       })}
