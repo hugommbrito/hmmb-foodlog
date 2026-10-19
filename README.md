@@ -337,6 +337,8 @@ O **backend já está pronto** (`POST /entries/photo` — ver "O que está imple
 | `npm start` | Inicia o servidor a partir do build compilado |
 | `npm run db:migrate` | Aplica todas as migrations (`src/db/migrations/*.sql`) via runner `tsx`, carregando o `.env` automaticamente |
 
+> **Migrations no boot:** `npm start` (ou `node dist/server.js`) também aplica todas as migrations antes de aceitar tráfego, sob um advisory lock do Postgres. Como cada `.sql` é idempotente, isso é um no-op em schema atualizado e garante que um deploy novo nunca sirva rotas contra tabelas inexistentes — independentemente de o host ter ou não um passo de pré-deploy (o `preDeployCommand` do `railway.json` só vale no Railway). Se a migration falhar, o servidor não sobe. O `npm run build` copia os `.sql` para `dist/db/migrations/`.
+
 ---
 
 ## Estrutura do projeto
