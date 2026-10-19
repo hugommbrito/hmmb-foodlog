@@ -1,5 +1,7 @@
 import type {
   ContextTag,
+  DayMark,
+  DayMarkStatus,
   EntryWithFoods,
   EntryAnalysisView,
   PatternsPayload,
@@ -146,6 +148,25 @@ export function setEntryContext(id: string, contextTagId: string | null): Promis
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ context_tag_id: contextTagId }),
+  });
+}
+
+// Day marks (skipped / partial days). GET returns only the marked days inside
+// the inclusive range; PATCH with `null` clears the mark. Changing a mark also
+// invalidates any cached AI analysis covering that day (server-side).
+export function fetchDayMarks(start: string, end: string): Promise<DayMark[]> {
+  const q = new URLSearchParams({ start, end });
+  return request<DayMark[]>(`/days?${q.toString()}`);
+}
+
+export function setDayMark(
+  day: string,
+  status: DayMarkStatus | null
+): Promise<{ day: string; status: DayMarkStatus | null }> {
+  return request<{ day: string; status: DayMarkStatus | null }>(`/days/${day}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ status }),
   });
 }
 

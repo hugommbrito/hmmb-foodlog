@@ -8,6 +8,7 @@ import {
   deleteEntry,
   deleteShareLink,
   deleteTag,
+  fetchDayMarks,
   fetchEntries,
   fetchRequestLogs,
   fetchTags,
@@ -17,6 +18,7 @@ import {
   purgeRequestLogs,
   reanalyzeEntry,
   searchEntries,
+  setDayMark,
   setEntryContext,
   setToken,
   UnauthorizedError,
@@ -24,6 +26,8 @@ import {
 } from './api';
 import type {
   ContextTag,
+  DayMark,
+  DayMarkStatus,
   EntryWithFoods,
   FoodItem,
   ReanalyzeRequest,
@@ -144,6 +148,39 @@ function textOn(hex: string): string {
   const b = n & 255;
   const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
   return lum > 0.6 ? '#111' : '#fff';
+}
+
+// Day marks (skipped / partial): labels, glyphs and small shared renderers used
+// by Review, Painel, Relatório and the public Share view.
+export const DAY_MARK_LABEL: Record<DayMarkStatus, string> = {
+  skipped: 'Não preenchido',
+  partial: 'Parcial',
+};
+// Compact glyphs for tight spots (calendar cells, timeline day labels).
+export const DAY_MARK_GLYPH: Record<DayMarkStatus, string> = { skipped: '⊘', partial: '◐' };
+
+export function marksToMap(marks: DayMark[]): Map<string, DayMarkStatus> {
+  return new Map(marks.map((m) => [m.day, m.status]));
+}
+
+export function DayMarkBadge({ status }: { status: DayMarkStatus }) {
+  return (
+    <span className={`day-mark-badge ${status}`}>
+      <span aria-hidden="true">{DAY_MARK_GLYPH[status]}</span> {DAY_MARK_LABEL[status]}
+    </span>
+  );
+}
+
+// "N dia(s) ficaram fora desta análise: 12/10 (não preenchido), 14/10 (parcial)."
+export function ExcludedDaysNote({ days }: { days: DayMark[] | undefined }) {
+  if (!days || days.length === 0) return null;
+  const list = days
+    .map((d) => `${d.day.slice(8, 10)}/${d.day.slice(5, 7)} (${DAY_MARK_LABEL[d.status].toLowerCase()})`)
+    .join(', ');
+  const lead = days.length === 1
+    ? '1 dia marcado ficou fora desta análise'
+    : `${days.length} dias marcados ficaram fora desta análise`;
+  return <p className="patterns-excluded">{lead}: {list}.</p>;
 }
 
 type Tab = 'review' | 'dashboard' | 'tags' | 'share' | 'report' | 'audit';
@@ -275,12 +312,29 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
   const [view, setView] = useState<DashboardView>('photowall');
   const [slots, setSlots] = useState<DashboardSlot[]>([]);
   const [tags, setTags] = useState<ContextTag[]>([]);
+  const [marks, setMarks] = useState<Map<string, DayMarkStatus>>(new Map());
 
   useEffect(() => {
     fetchTags()
       .then(setTags)
       .catch((err) => { if (err instanceof UnauthorizedError) onLogout(); });
   }, [onLogout]);
+
+  // Day marks for the whole period in one call (the day slots are fetched per day
+  // below). Non-fatal: on failure the views simply show no marks.
+  useEffect(() => {
+    let cancelled = false;
+    setMarks(new Map());
+    const days = getDashboardDays(period, customStart, customEnd);
+    if (days.length === 0) return;
+    fetchDayMarks(days[0], days[days.length - 1])
+      .then((list) => { if (!cancelled) setMarks(marksToMap(list)); })
+      .catch((err) => {
+        if (cancelled) return;
+        if (err instanceof UnauthorizedError) onLogout();
+      });
+    return () => { cancelled = true; };
+  }, [period, customStart, customEnd, onLogout]);
 
   useEffect(() => {
     let cancelled = false;
@@ -305,9 +359,13 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
     return () => { cancelled = true; };
   }, [period, customStart, customEnd, onLogout]);
 
-  const isEmpty = slots.length > 0
+  const noEntries = slots.length > 0
     && slots.every((s) => s.status !== 'loading')
     && slots.every((s) => s.entries.length === 0);
+  // Calendário/Lista can still show marked (skipped/partial) days with no entries;
+  // Parede de Fotos/Timeline are entry-only, so they stay empty either way.
+  const entryOnlyView = view === 'photowall' || view === 'timeline';
+  const isEmpty = noEntries && (marks.size === 0 || entryOnlyView);
   const today = todayLocal();
 
   const handleEndChange = (newEnd: string) => {
@@ -381,10 +439,10 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
         view === 'photowall'
           ? <PhotoWallView slots={slots} />
           : view === 'timeline'
-            ? <TimelineView slots={slots} tags={tags} />
+            ? <TimelineView slots={slots} tags={tags} marks={marks} />
             : view === 'calendar'
-              ? <DashboardCalendarView slots={slots} />
-              : <DashboardListView slots={slots} />
+              ? <DashboardCalendarView slots={slots} marks={marks} />
+              : <DashboardListView slots={slots} marks={marks} />
       )}
     </div>
   );
@@ -601,7 +659,15 @@ const RTL_TICKS = Array.from({ length: RTL_TOTAL + 1 }, (_, i) => {
   return { i, isHour, hour, showLabel: isHour && i % 8 === 0 };
 });
 
-function TimelineView({ slots, tags }: { slots: DashboardSlot[]; tags: ContextTag[] }) {
+function TimelineView({
+  slots,
+  tags,
+  marks,
+}: {
+  slots: DashboardSlot[];
+  tags: ContextTag[];
+  marks: Map<string, DayMarkStatus>;
+}) {
   const [modalEntry, setModalEntry] = useState<EntryWithFoods | null>(null);
   const tagsById = new Map(tags.map((t) => [t.id, t]));
 
@@ -632,6 +698,7 @@ function TimelineView({ slots, tags }: { slots: DashboardSlot[]; tags: ContextTa
           if (slot.status !== 'done' || slot.entries.length === 0) return null;
 
           const [weekday, datePart, isWeekend] = dayParts(slot.date);
+          const mark = marks.get(slot.date);
           const sorted = [...slot.entries].sort(
             (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
           );
@@ -660,9 +727,14 @@ function TimelineView({ slots, tags }: { slots: DashboardSlot[]; tags: ContextTa
 
           return (
             <div key={slot.date} className={`rtl-day${isWeekend ? ' rtl-day-weekend' : ''}`}>
-              <div className="rtl-label" aria-label={`${weekday} ${datePart}`}>
+              <div className="rtl-label" aria-label={`${weekday} ${datePart}${mark ? `, ${DAY_MARK_LABEL[mark]}` : ''}`}>
                 <span className="rtl-label-day">{weekday}</span>
                 <span className="rtl-label-date">{datePart}</span>
+                {mark && (
+                  <span className={`rtl-label-mark ${mark}`} title={DAY_MARK_LABEL[mark]} aria-hidden="true">
+                    {DAY_MARK_GLYPH[mark]}
+                  </span>
+                )}
               </div>
               <div className="rtl-content">
                 <div className="rtl-inner">
@@ -736,7 +808,7 @@ function fmtDateBR(d: string): string {
 
 const CAL_WEEKDAYS = ['D', 'S', 'T', 'Q', 'Q', 'S', 'S'];
 
-function DashboardCalendarView({ slots }: { slots: DashboardSlot[] }) {
+function DashboardCalendarView({ slots, marks }: { slots: DashboardSlot[]; marks: Map<string, DayMarkStatus> }) {
   const [dayModal, setDayModal] = useState<DayEntry[] | null>(null);
 
   const byDay = useMemo(() => {
@@ -770,14 +842,20 @@ function DashboardCalendarView({ slots }: { slots: DashboardSlot[] }) {
                 const inRange = day >= start && day <= end;
                 const isLoading = inRange && byDay.loading.has(day);
                 const dayEntries = byDay.done.get(day) ?? [];
+                const mark = inRange ? marks.get(day) : undefined;
                 const thumbs = dayEntries.map((e) => e.photos[0]).filter(Boolean).slice(0, 3);
                 const overflow = dayEntries.length - thumbs.length;
                 const hasEntriesNoPhoto = inRange && dayEntries.length > 0 && thumbs.length === 0;
                 const clickable = inRange && dayEntries.length > 0;
-                const cls = `cal-cell${inRange ? '' : ' out'}${isLoading ? ' cal-cell-loading' : ''}`;
+                const cls = `cal-cell${inRange ? '' : ' out'}${isLoading ? ' cal-cell-loading' : ''}${mark ? ` cal-cell-${mark}` : ''}`;
                 const inner = (
                   <>
                     <span className="cal-day">{Number(day.slice(8))}</span>
+                    {mark && (
+                      <span className={`cal-mark ${mark}`} title={DAY_MARK_LABEL[mark]} aria-label={DAY_MARK_LABEL[mark]}>
+                        {DAY_MARK_GLYPH[mark]}
+                      </span>
+                    )}
                     {thumbs.length > 0 && (
                       <div className="cal-thumbs">
                         {thumbs.map((url, j) => <img key={j} src={url} alt="" loading="lazy" />)}
@@ -800,14 +878,18 @@ function DashboardCalendarView({ slots }: { slots: DashboardSlot[] }) {
   );
 }
 
-function DashboardListView({ slots }: { slots: DashboardSlot[] }) {
+function DashboardListView({ slots, marks }: { slots: DashboardSlot[]; marks: Map<string, DayMarkStatus> }) {
   return (
     <div className="shared-list">
       {[...slots].reverse().map((slot) => {
         if (slot.status === 'loading') {
           return <div key={slot.date} className="skeleton-item" aria-hidden="true" />;
         }
-        if (slot.status !== 'done' || slot.entries.length === 0) return null;
+        if (slot.status !== 'done') return null;
+        // A marked day earns a section even with no entries, so a deliberate gap
+        // reads as such instead of silently vanishing from the list.
+        const mark = marks.get(slot.date);
+        if (slot.entries.length === 0 && !mark) return null;
         const sorted = slot.entries
           .slice()
           .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
@@ -815,9 +897,15 @@ function DashboardListView({ slots }: { slots: DashboardSlot[] }) {
         return (
           <section className="shared-day" key={slot.date}>
             <div className="shared-day-head">
-              <h2>{fmtDateBR(slot.date)}</h2>
+              <div className="shared-day-title">
+                <h2>{fmtDateBR(slot.date)}</h2>
+                {mark && <DayMarkBadge status={mark} />}
+              </div>
               {dayTotalsStr && <span className="totals">{dayTotalsStr}</span>}
             </div>
+            {sorted.length === 0 && mark ? (
+              <p className="day-mark-note">Sem registros — dia marcado como {DAY_MARK_LABEL[mark].toLowerCase()}.</p>
+            ) : (
             <ul className="tl-list">
               {sorted.map((entry) => {
                 const time = new Date(entry.created_at).toLocaleTimeString('pt-BR', {
@@ -848,6 +936,7 @@ function DashboardListView({ slots }: { slots: DashboardSlot[] }) {
                 );
               })}
             </ul>
+            )}
           </section>
         );
       })}
@@ -899,18 +988,19 @@ function sevenDaysBefore(dateStr: string): string[] {
   });
 }
 
-function dotAriaLabel(dot: HistoryDot): string {
+function dotAriaLabel(dot: HistoryDot, mark: DayMarkStatus | undefined): string {
   const d = new Date(dot.date + 'T12:00:00');
   const dayName = d.toLocaleDateString('pt-BR', { weekday: 'long' });
   const day = String(d.getDate()).padStart(2, '0');
   const month = String(d.getMonth() + 1).padStart(2, '0');
   const dmStr = `${day}/${month}`;
-  if (dot.status === 'loading') return `${dayName} ${dmStr}: carregando`;
-  if (dot.total === 0) return `${dayName} ${dmStr}: sem entradas`;
+  const markNote = mark === 'skipped' ? ' — marcado como não preenchido' : mark === 'partial' ? ' — preenchido parcialmente' : '';
+  if (dot.status === 'loading') return `${dayName} ${dmStr}: carregando${markNote}`;
+  if (dot.total === 0) return `${dayName} ${dmStr}: sem entradas${markNote}`;
   const entryWord = dot.total === 1 ? 'entrada' : 'entradas';
-  if (dot.pending === 0) return `${dayName} ${dmStr}: ${dot.total} ${entryWord}`;
+  if (dot.pending === 0) return `${dayName} ${dmStr}: ${dot.total} ${entryWord}${markNote}`;
   const pendWord = dot.pending === 1 ? 'pendente de revisão' : 'pendentes de revisão';
-  return `${dayName} ${dmStr}: ${dot.total} ${entryWord}, ${dot.pending} ${pendWord}`;
+  return `${dayName} ${dmStr}: ${dot.total} ${entryWord}, ${dot.pending} ${pendWord}${markNote}`;
 }
 
 function Review({ onLogout }: { onLogout: () => void }) {
@@ -923,6 +1013,12 @@ function Review({ onLogout }: { onLogout: () => void }) {
   const [error, setError] = useState<string | null>(null);
   const [showManual, setShowManual] = useState(false);
   const [historyDots, setHistoryDots] = useState<HistoryDot[]>([]);
+
+  // Day marks: the selected day's own mark (drives the "Dia" control) plus the
+  // marks of the 7 history days, fetched together in one range call.
+  const [dayMark, setDayMarkState] = useState<DayMarkStatus | null>(null);
+  const [marksByDay, setMarksByDay] = useState<Map<string, DayMarkStatus>>(new Map());
+  const [markBusy, setMarkBusy] = useState(false);
 
   // CAP-8: food search across full history
   const [searchQuery, setSearchQuery] = useState('');
@@ -1024,6 +1120,55 @@ function Review({ onLogout }: { onLogout: () => void }) {
     });
     return () => { cancelled = true; };
   }, [date, onLogout]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setDayMarkState(null);
+    fetchDayMarks(addDaysToDate(date, -7), date)
+      .then((list) => {
+        if (cancelled) return;
+        const map = marksToMap(list);
+        setMarksByDay(map);
+        setDayMarkState(map.get(date) ?? null);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        if (err instanceof UnauthorizedError) {
+          onLogout();
+          return;
+        }
+        setError((err as Error).message);
+      });
+    return () => { cancelled = true; };
+  }, [date, onLogout]);
+
+  // Set/clear the selected day's mark. The server drops any cached AI analysis
+  // covering the day, so the next report/share analysis honors the change.
+  const handleSetDayMark = useCallback(
+    async (status: DayMarkStatus | null) => {
+      if (status === dayMark) return;
+      setMarkBusy(true);
+      try {
+        const res = await setDayMark(date, status);
+        setDayMarkState(res.status);
+        setMarksByDay((prev) => {
+          const next = new Map(prev);
+          if (res.status) next.set(date, res.status);
+          else next.delete(date);
+          return next;
+        });
+      } catch (err) {
+        if (err instanceof UnauthorizedError) {
+          onLogout();
+          return;
+        }
+        setError((err as Error).message);
+      } finally {
+        setMarkBusy(false);
+      }
+    },
+    [date, dayMark, onLogout]
+  );
 
   const handleAccept = useCallback(
     async (id: string) => {
@@ -1279,7 +1424,9 @@ function Review({ onLogout }: { onLogout: () => void }) {
           {error && <div className="banner error">{error}</div>}
           {loading && <div className="banner">Carregando…</div>}
           {!loading && !error && entries.length === 0 && (
-            <div className="empty">Nenhuma entrada neste dia.</div>
+            <div className="empty">
+              {dayMark === 'skipped' ? 'Dia marcado como não preenchido.' : 'Nenhuma entrada neste dia.'}
+            </div>
           )}
           {!loading && !error && entries.length > 0 && visible.length === 0 && (
             <div className="empty">Nenhuma entrada para este filtro.</div>
@@ -1288,7 +1435,9 @@ function Review({ onLogout }: { onLogout: () => void }) {
           {!loading && !error && (
             <div className="day-summary">
               {entries.length === 0 ? (
-                <span className="day-summary-empty">Sem registros neste dia.</span>
+                <span className="day-summary-empty">
+                  {dayMark === 'skipped' ? 'Dia não preenchido.' : 'Sem registros neste dia.'}
+                </span>
               ) : (
                 <div className="day-summary-macros">
                   {dayKcal != null && (
@@ -1318,14 +1467,45 @@ function Review({ onLogout }: { onLogout: () => void }) {
                 </div>
               )}
               <div className="day-history-dots">
-                {historyDots.map((dot) => (
-                  <button
-                    key={dot.date}
-                    className={`history-dot${dot.status === 'reviewed' ? ' reviewed' : dot.status === 'pending' ? ' pending' : dot.status === 'loading' ? ' loading' : ''}`}
-                    aria-label={dotAriaLabel(dot)}
-                    onClick={() => setDate(dot.date)}
-                  />
-                ))}
+                {historyDots.map((dot) => {
+                  const mark = marksByDay.get(dot.date);
+                  const label = dotAriaLabel(dot, mark);
+                  return (
+                    <button
+                      key={dot.date}
+                      className={`history-dot${dot.status === 'reviewed' ? ' reviewed' : dot.status === 'pending' ? ' pending' : dot.status === 'loading' ? ' loading' : ''}${mark ? ` ${mark}` : ''}`}
+                      aria-label={label}
+                      title={label}
+                      onClick={() => setDate(dot.date)}
+                    />
+                  );
+                })}
+              </div>
+              <div className="day-status" role="group" aria-label="Status do dia">
+                <span className="day-status-label">Dia</span>
+                <div className="seg day-status-seg">
+                  {([null, 'partial', 'skipped'] as const).map((s) => (
+                    <button
+                      key={s ?? 'normal'}
+                      type="button"
+                      className={`seg-btn${dayMark === s ? ' active' : ''}${s ? ` ${s}` : ''}`}
+                      aria-pressed={dayMark === s}
+                      onClick={() => void handleSetDayMark(s)}
+                      disabled={markBusy}
+                    >
+                      {s === null ? 'Normal' : DAY_MARK_LABEL[s]}
+                    </button>
+                  ))}
+                </div>
+                {dayMark && (
+                  <span className="day-status-hint">
+                    {dayMark === 'skipped'
+                      ? entries.length > 0
+                        ? `Este dia tem ${entries.length} ${entries.length === 1 ? 'registro' : 'registros'}, mas fica inteiro fora da análise de padrões.`
+                        : 'Fora da análise de padrões — não conta como jejum.'
+                      : 'Dia incompleto: seus registros ficam fora da análise de padrões.'}
+                  </span>
+                )}
               </div>
             </div>
           )}
@@ -1741,6 +1921,8 @@ function WeeklyReportView({ onLogout }: { onLogout: () => void }) {
   const [data, setData] = useState<ReportData | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [preset, setPreset] = useState<ReportPreset>(7);
+  // Marked (skipped/partial) days the server left out — shown for both outcomes.
+  const [excludedDays, setExcludedDays] = useState<DayMark[]>([]);
   const today = todayLocal();
   const [customStart, setCustomStart] = useState<string>(addDays(today, -6));
   const [customEnd, setCustomEnd] = useState<string>(today);
@@ -1749,8 +1931,10 @@ function WeeklyReportView({ onLogout }: { onLogout: () => void }) {
     setStatus('loading');
     setData(null);
     setErrorMsg(null);
+    setExcludedDays([]);
     fetchWeeklyReport(params)
       .then((payload) => {
+        setExcludedDays(payload.excluded_days ?? []);
         if ('insufficient' in payload && payload.insufficient) {
           setStatus('insufficient');
         } else {
@@ -1864,7 +2048,8 @@ function WeeklyReportView({ onLogout }: { onLogout: () => void }) {
 
       {status === 'insufficient' && (
         <div className="empty">
-          <p>Dados insuficientes (mínimo 3 dias de registro no período selecionado).</p>
+          <p>Dados insuficientes (mínimo 3 dias de registro no período selecionado; dias marcados não contam).</p>
+          <ExcludedDaysNote days={excludedDays} />
           <button type="button" className="seg-btn" onClick={handleRegenerar}>
             Regenerar
           </button>
@@ -1897,6 +2082,7 @@ function WeeklyReportView({ onLogout }: { onLogout: () => void }) {
               </button>
             </div>
           </div>
+          <ExcludedDaysNote days={excludedDays} />
           {reportData.analysis.summary && (
             <p className="patterns-summary">{reportData.analysis.summary}</p>
           )}

@@ -125,11 +125,26 @@ Fotos são armazenadas com a chave `photos/{user_id}/{timestamp}-{uuid}` e acess
 
 ### Banco de dados PostgreSQL
 
-Três tabelas principais:
+Tabelas principais:
 
 - **`users`** — número de telefone como identificador único
 - **`entries`** — cada foto enviada gera uma entrada; campos de IA (`title`, `ai_confidence_overall`, `ai_cycles`) são preenchidos pela análise
 - **`food_items`** — itens identificados pela IA, com campos nutricionais por item (kcal, proteína, gordura, carboidratos, confidence)
+- **`day_marks`** — dias marcados pelo usuário como `skipped` (não preenchido) ou `partial` (parcial); chave `(user_id, day)`, ausência de linha = dia normal
+
+### Marcação de dias (não preenchido / parcial)
+
+Para pular um dia de propósito sem distorcer as análises, o usuário marca o dia na aba **Revisão** (controle "Dia": Normal / Parcial / Não preenchido). Semântica:
+
+- **Não preenchido** — nada foi registrado de propósito. **Parcial** — só parte das refeições foi registrada.
+- Dias marcados (de qualquer tipo) ficam **fora da análise de padrões por IA** (`GET /report/weekly` e `GET /shared/:token/patterns`): seus registros, se existirem, não entram no texto enviado ao modelo, não contam para o mínimo de 3 dias, e o prompt lista as datas marcadas para que a lacuna não seja lida como jejum ou refeição pulada. As respostas trazem `excluded_days` com os dias deixados de fora.
+- Mudar a marca de um dia invalida os caches de análise que cobrem aquele dia (`weekly_reports` apagado; `share_links.analysis_json` volta a `NULL`) — a próxima consulta recalcula.
+- Os registros do dia continuam visíveis em todas as vistas (Revisão, Painel, link do nutricionista); o calendário, a lista e a timeline sinalizam o dia (⊘ não preenchido, ◐ parcial) e o payload público `GET /shared/:token` traz `day_marks`.
+
+Endpoints (auth Bearer, dias em `America/Sao_Paulo`):
+
+- `GET /days?start=YYYY-MM-DD&end=YYYY-MM-DD` → `[{ "day", "status" }]` apenas dos dias marcados no intervalo (máx. 400 dias)
+- `PATCH /days/:date` com `{ "status": "skipped" | "partial" | null }` → cria/atualiza a marca (`null` remove). Rejeita datas inválidas e dias futuros (`400`).
 
 ### Health check
 
@@ -342,10 +357,12 @@ src/
 ├── routes/
 │   ├── health.ts      # GET /health
 │   ├── webhook.ts     # POST /webhook/whatsapp
-│   └── entries.ts     # POST /entries/photo (captura REST, auth Bearer)
+│   ├── entries.ts     # POST /entries/photo (captura REST, auth Bearer)
+│   └── days.ts        # GET /days, PATCH /days/:date (marcação de dias não preenchidos/parciais)
 └── services/
     ├── ai.ts               # Chamada Claude Sonnet vision + parse do JSON de resposta
     ├── analysis-runner.ts  # busca entry → contexto → IA → persiste, com retry (in-process)
+    ├── day-marks.ts        # Leitura das marcas de dia, exclusão da análise e invalidação de cache
     ├── storage.ts          # Upload para Cloudflare R2
     └── whatsapp.ts         # Download de foto + envio de mensagem via Z-API
 ```

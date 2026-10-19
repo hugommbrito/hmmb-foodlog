@@ -69,6 +69,16 @@ export interface ShareLink {
   status: 'active' | 'expired';
 }
 
+// Day marks: a local (America/Sao_Paulo) day the user flagged as intentionally
+// 'skipped' (nothing logged on purpose) or 'partial' (some meals logged, not
+// all). Marked days stay out of the AI pattern analysis. No mark = normal day.
+export type DayMarkStatus = 'skipped' | 'partial';
+
+export interface DayMark {
+  day: string; // 'YYYY-MM-DD'
+  status: DayMarkStatus;
+}
+
 // Public read-only entry exposed through a share link (no user_id/PII).
 export interface SharedEntry {
   id: string;
@@ -85,6 +95,7 @@ export interface SharedPayload {
   period_end: string;
   expires_at: string;
   entries: SharedEntry[];
+  day_marks: DayMark[];
 }
 
 // CAP-7b: AI-detected behavioral pattern shown in the nutritionist's view.
@@ -106,6 +117,7 @@ export interface PatternsPayload {
   generated_at?: string | null; // ISO
   analysis?: PatternAnalysis;
   insufficient?: boolean;
+  excluded_days?: DayMark[]; // marked days left out of the analysis
 }
 
 // CAP-6b: optional query params for GET /report/weekly.
@@ -117,9 +129,16 @@ export interface ReportQueryParams {
 
 // CAP-6: payload of GET /report/weekly (authenticated). Either the analysis
 // (with period and generated_at) or `insufficient` when there's too little data.
+// `excluded_days` lists the marked (skipped/partial) days left out of the analysis.
 export type WeeklyReportPayload =
-  | { generated_at: string; period_start: string; period_end: string; analysis: PatternAnalysis }
-  | { insufficient: true };
+  | {
+      generated_at: string;
+      period_start: string;
+      period_end: string;
+      analysis: PatternAnalysis;
+      excluded_days?: DayMark[];
+    }
+  | { insufficient: true; excluded_days?: DayMark[] };
 
 // Mirrors the backend `RequestLog` (src/types/models.ts). One persisted request
 // log; direction is 'inbound' or 'outbound'. created_at arrives as an ISO string.

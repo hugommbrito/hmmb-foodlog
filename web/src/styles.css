@@ -1134,3 +1134,66 @@ button.cal-cell:hover {
   height: 100%;
   background: var(--accent-light);
 }
+
+/* ── Day marks (dia não preenchido / parcial) ─────────────────────────── */
+/* Revisão: "Dia" control inside the day-summary card — wraps to its own row. */
+.day-status {
+  flex-basis: 100%;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-3);
+  border-top: 1px solid var(--border);
+  padding-top: var(--space-2);
+  margin-top: var(--space-1);
+}
+.day-status-label { font-size: 0.8rem; color: var(--muted); }
+.day-status .seg { margin: 0; }
+.day-status-hint { font-size: 0.78rem; color: var(--muted); }
+
+/* History dots: a ring means the day is marked — hollow = não preenchido,
+   half-filled = parcial. --dot-color carries the review status (border/accent/
+   warning) so the partial half-fill and the ring keep that signal. */
+.history-dot { --dot-color: var(--border); background: var(--dot-color); }
+.history-dot.reviewed { --dot-color: var(--accent); }
+.history-dot.pending { --dot-color: var(--warning); }
+.history-dot.skipped,
+.history-dot.partial { width: 9px; height: 9px; border: 1.5px solid var(--muted); }
+.history-dot.reviewed.skipped,
+.history-dot.pending.skipped,
+.history-dot.reviewed.partial,
+.history-dot.pending.partial { border-color: var(--dot-color); }
+.history-dot.skipped { background: transparent; }
+.history-dot.partial { background: linear-gradient(90deg, var(--dot-color) 50%, transparent 50%); }
+
+/* Calendar cells (Painel + Share): glyph top-right; skipped days are hatched. */
+.cal-cell { position: relative; }
+.cal-mark {
+  position: absolute;
+  top: 2px;
+  right: 4px;
+  font-size: 0.72rem;
+  line-height: 1;
+  color: var(--muted);
+}
+.cal-cell-skipped {
+  background: repeating-linear-gradient(135deg, var(--card) 0 5px, var(--border) 5px 6px);
+}
+
+/* List day headers (Painel + Share) and timeline day labels. */
+.shared-day-title { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+.day-mark-badge {
+  font-size: 0.72rem;
+  font-weight: 600;
+  border: 1px solid var(--muted);
+  color: var(--muted);
+  border-radius: var(--radius-pill);
+  padding: 1px var(--space-2);
+  white-space: nowrap;
+}
+.day-mark-note { margin: 0; color: var(--muted); font-size: 0.85rem; font-style: italic; }
+.rtl-label-mark { font-size: 0.7rem; line-height: 1; color: var(--muted); margin-top: 2px; }
+
+/* Relatório / Padrões: which marked days were left out of the AI analysis. */
+.patterns-excluded { margin: 0; font-size: 0.8rem; color: var(--muted); }
+.empty .patterns-excluded { margin: var(--space-2) 0 var(--space-3); }
